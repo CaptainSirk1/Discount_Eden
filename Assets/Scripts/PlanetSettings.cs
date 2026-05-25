@@ -18,10 +18,7 @@ public class AtmosphericData
     public float finalCarbonDioxide;
     public float finalMethane;
     public float finalOxygen;
-    public float finaltraceElements;
-    
-    [Tooltip("Calculated based on temperature and sea level")]
-    public float waterVapor;
+    public float finalTraceElements;
 
     // This method balances the DRY sliders ONLY.
     // It doesn't care about water vapor yet.
@@ -43,11 +40,14 @@ public class AtmosphericData
     public void CalculateFinalState(float vaporPercent)
     {
         finalWaterVapor = vaporPercent;
-        float dryMultiplier = 1f - finalWaterVapor;
+        float displacementMultiplier = 1f - finalWaterVapor;
 
         // The "Dry" sliders remain untouched, we just scale their output
-        finalNitrogen = nitrogen * dryMultiplier;
-        finalOxygen = oxygen * dryMultiplier;
+        finalNitrogen = nitrogen * displacementMultiplier;
+        finalCarbonDioxide = carbonDioxide * displacementMultiplier;
+        finalMethane = methane * displacementMultiplier;
+        finalOxygen = oxygen * displacementMultiplier;
+        finalTraceElements = traceElements * displacementMultiplier;
         // ... scale the others for the generator ...
     }
 }
@@ -71,7 +71,7 @@ public class PlanetSettings : ScriptableObject
     [Tooltip("Determines the strength of noise used to break up inorganic voronoi divisions")]
     [Range(0f, 1f)] public float continentEdgeNoise;
 
-    //Actual Sea Level calculated from maximum sea level and temperature.
+    [Tooltip("Actual Sea Level calculated from maximum sea level and temperature.")]
     [Header("Calculated Results (Read Only)")]
     public float actualSeaLevel;
 
