@@ -1,0 +1,44 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 4d23c40a45d3c494285a1cacee8b1fa7, type: 3}
+  m_Name: ClimateSettings
+  m_EditorClassIdentifier: Assembly-CSharp::ClimateSettings
+  atmosphere:
+    nitrogen: 0.65
+    carbonDioxide: 0.25
+    methane: 0.02
+    oxygen: 0.01
+    traceElements: 0.01
+    finalWaterVapor: 0
+    finalNitrogen: 0
+    finalCarbonDioxide: 0
+    finalMethane: 0
+    finalOxygen: 0
+    finalTraceElements: 0
+  globalMoisture: 0.5
+  averageTemp: 1.5
+  preview:
+    atmosphere:
+      nitrogen: 0.65
+      carbonDioxide: 0.25
+      methane: 0.02
+      oxygen: 0.01
+      traceElements: 0.01
+      finalWaterVapor: 0
+      finalNitrogen: 0
+      finalCarbonDioxide: 0
+      finalMethane: 0
+      finalOxygen: 0
+      finalTraceElements: 0
+    globalMoisture: 0
+    averageTemp: 0
+    actualSeaLevel: 0

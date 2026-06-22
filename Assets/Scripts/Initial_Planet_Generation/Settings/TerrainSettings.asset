@@ -1,0 +1,26 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: be959d1c97b935149a9ff792bcadac2c, type: 3}
+  m_Name: TerrainSettings
+  m_EditorClassIdentifier: Assembly-CSharp::TerrainSettings
+  planetRadius: 10
+  worldSeed: 0
+  cellCount: 100
+  continentCenters: 10
+  strengthMultiplier: 0.7
+  heightRange: 10
+  continentEdgeNoise: 0.8
+  elevationCoherence: 0.9
+  warpNoise: {fileID: 11400000, guid: 584cc43926235dc45abe2187b4986880, type: 2}
+  terrainNoise: {fileID: 11400000, guid: d0de34f73118726409eead1bc9237292, type: 2}
+  mountainNoise: {fileID: 11400000, guid: fa024efa456e99f4e8e154496f787a62, type: 2}
+  shieldMultiplier: 1.2
