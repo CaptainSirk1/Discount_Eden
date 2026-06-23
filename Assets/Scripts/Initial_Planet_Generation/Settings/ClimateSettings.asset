@@ -24,7 +24,7 @@ MonoBehaviour:
     finalMethane: 0
     finalOxygen: 0
     finalTraceElements: 0
-  globalMoisture: 0.5
+  globalMoisture: 0.7
   averageTemp: 1.5
   preview:
     atmosphere:
@@ -33,12 +33,12 @@ MonoBehaviour:
       methane: 0.02
       oxygen: 0.01
       traceElements: 0.01
-      finalWaterVapor: 0
-      finalNitrogen: 0
-      finalCarbonDioxide: 0
-      finalMethane: 0
-      finalOxygen: 0
-      finalTraceElements: 0
-    globalMoisture: 0
-    averageTemp: 0
-    actualSeaLevel: 0
+      finalWaterVapor: 0.84375
+      finalNitrogen: 0.108045205
+      finalCarbonDioxide: 0.04155585
+      finalMethane: 0.003324468
+      finalOxygen: 0.001662234
+      finalTraceElements: 0.001662234
+    globalMoisture: 0.7
+    averageTemp: 1.5
+    actualSeaLevel: 0.2

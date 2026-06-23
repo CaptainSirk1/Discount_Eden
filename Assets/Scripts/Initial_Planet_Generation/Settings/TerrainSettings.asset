@@ -14,8 +14,8 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::TerrainSettings
   planetRadius: 10
   worldSeed: 0
-  cellCount: 100
-  continentCenters: 10
+  cellCount: 250
+  continentCenters: 24
   strengthMultiplier: 0.7
   heightRange: 10
   continentEdgeNoise: 0.8

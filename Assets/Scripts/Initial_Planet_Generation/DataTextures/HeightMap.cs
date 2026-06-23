@@ -41,8 +41,8 @@ public class HeightMap
                 Vector3 warpedPoint = UVHelper.WarpSpherePoint(spherePoint, settings.warpNoise, settings.worldSeed);
 
                 // Configure Depth and Radius to determine how wide and deep divergent fault lines run.
-                float faultRadius = 0.02f;
-                float faultDepth = 0.08f;
+                float faultRadius = 0.05f;
+                float faultDepth = 0.4f;
                 if (influence.splineGrid.GetNearestPoint(spherePoint, out _, out float faultStrength, out float dSq))
                 {
                     float dist = Mathf.Sqrt(dSq);

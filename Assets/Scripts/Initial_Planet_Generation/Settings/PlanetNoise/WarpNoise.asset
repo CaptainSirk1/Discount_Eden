@@ -16,7 +16,7 @@ MonoBehaviour:
   additiveStrength: 0.5
   noiseType: 0
   octaves: 4
-  scale: 2
+  scale: 4
   lacunarity: 2
   persistence: 0.5
-  strength: 1
+  strength: 0.3
