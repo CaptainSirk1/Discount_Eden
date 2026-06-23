@@ -21,7 +21,7 @@ public class GenerateTectonics
     // Divides UV space into a grid so neighbor searches only check nearby cells
     // instead of the entire array. Built once after generation.
     const int BUCKET_SIZE = 8;
-    List<TectonicCell>[,] buckets;
+    List<int>[,] buckets;
 
     public GenerateTectonics(TerrainSettings settings)
     {
@@ -78,7 +78,7 @@ public class GenerateTectonics
         // Scaling by cellCount keeps jitter proportional regardless of resolution.
         float jitterStrength = settings.continentEdgeNoise * (2f / Mathf.Sqrt(settings.cellCount));
 
-        foreach (TectonicCell cell in cells)
+        for (int i = 0; i < cells.Length; i++)
         {
             Vector3 offset = new Vector3(
                 (float)(rng.NextDouble() * 2 - 1),
@@ -86,7 +86,7 @@ public class GenerateTectonics
                 (float)(rng.NextDouble() * 2 - 1)
             ) * jitterStrength;
 
-            cell.position = (cell.position + offset).normalized;
+            cells[i].position = (cells[i].position + offset).normalized;
         }
     }
 
@@ -108,18 +108,18 @@ public class GenerateTectonics
         }
 
         for (int i = 0; i < settings.continentCenters; i++)
-            cells[indices[i]].isContinentCenter = true;
+            cells[indices[i]].isContinentCenter = 1;
     }
 
     void AssignContinentCenterData()
     {
-        foreach (TectonicCell cell in cells)
+        for (int i = 0; i < cells.Length; i++)
         {
-            if (!cell.isContinentCenter) continue;
+            if (cells[i].isContinentCenter == 0) continue;
 
-            cell.baseElevation = (float)(rng.NextDouble() * 2 - 1);
-            cell.movementDirection = RandomTangent(cell.position);
-            cell.movementStrength = Mathf.Lerp(
+            cells[i].baseElevation = (float)(rng.NextDouble() * 2 - 1);
+            cells[i].movementDirection = RandomTangent(cells[i].position);
+            cells[i].movementStrength = Mathf.Lerp(
                 (float)rng.NextDouble(), 1f, settings.strengthMultiplier);
         }
     }
@@ -129,71 +129,71 @@ public class GenerateTectonics
         // Breadth-first expansion from continent centers outward.
         // Each cell weights toward its nearest already-assigned neighbor,
         // producing gradual regional variation rather than sharp jumps.
-        Queue<TectonicCell> frontier = new Queue<TectonicCell>();
-        HashSet<TectonicCell> assigned = new HashSet<TectonicCell>();
+        Queue<int> frontier = new Queue<int>();
+        HashSet<int> assigned = new HashSet<int>();
 
-        foreach (TectonicCell cell in cells)
+        for (int i = 0; i < cells.Length; i++)
         {
-            if (!cell.isContinentCenter) continue;
-            frontier.Enqueue(cell);
-            assigned.Add(cell);
+            if (cells[i].isContinentCenter == 0) continue;
+            frontier.Enqueue(i);
+            assigned.Add(i);
         }
 
         while (frontier.Count > 0)
         {
-            TectonicCell current = frontier.Dequeue();
+            int current = frontier.Dequeue();
 
-            foreach (TectonicCell other in cells)
+            for (int i = 0; i < cells.Length; i++)
             {
-                if (assigned.Contains(other)) continue;
-                if (Vector3.Distance(current.position, other.position) > neighborRadius) continue;
+                if (assigned.Contains(i)) continue;
+                if (Vector3.Distance(cells[current].position, cells[i].position) > neighborRadius) continue;
 
-                AssignWeightedFromNeighbor(other, current);
-                assigned.Add(other);
-                frontier.Enqueue(other);
+                AssignWeightedFromNeighbor(i, current);
+                assigned.Add(i);
+                frontier.Enqueue(i);
             }
         }
 
         // Fallback for isolated cells not reached by the frontier
-        foreach (TectonicCell cell in cells)
+        for (int i = 0; i < cells.Length; i++)
         {
-            if (assigned.Contains(cell)) continue;
-            AssignWeightedFromNeighbor(cell, GetNearestAssigned(cell.position, assigned));
+            if (assigned.Contains(i)) continue;
+            int nearestIdx = GetNearestAssigned(cells[i].position, assigned);
+            if (nearestIdx >= 0)
+                AssignWeightedFromNeighbor(i, nearestIdx);
         }
     }
 
-    void AssignWeightedFromNeighbor(TectonicCell cell, TectonicCell neighbor)
+    void AssignWeightedFromNeighbor(int cellIndex, int neighborIndex)
     {
         float heightVariation = (float)(rng.NextDouble() * 2 - 1) * 0.15f;
         float strengthVariation = (float)(rng.NextDouble() * 2 - 1) * 0.05f;
 
-        cell.baseElevation = Mathf.Clamp(
-            neighbor.baseElevation + heightVariation * (1f - settings.elevationCoherence),
+        cells[cellIndex].baseElevation = Mathf.Clamp(
+            cells[neighborIndex].baseElevation + heightVariation * (1f - settings.elevationCoherence),
             -1f, 1f);
 
-        cell.movementStrength = Mathf.Clamp01(
-            neighbor.movementStrength + strengthVariation);
+        cells[cellIndex].movementStrength = Mathf.Clamp01(
+            cells[neighborIndex].movementStrength + strengthVariation);
 
-        // elevationCoherence also controls movement direction variance.
-        // Split into a separate slider in TerrainSettings for independent control.
         float angleVariation = (float)(rng.NextDouble() * 2 - 1) * 30f * (1f - settings.elevationCoherence);
-        cell.movementDirection = Quaternion.AngleAxis(angleVariation, cell.position)
-                               * neighbor.movementDirection;
+        cells[cellIndex].movementDirection = Quaternion.AngleAxis(angleVariation, cells[cellIndex].position)
+                                        * cells[neighborIndex].movementDirection;
     }
 
     void BuildSpatialBuckets()
     {
-        buckets = new List<TectonicCell>[BUCKET_SIZE, BUCKET_SIZE];
+        buckets = new List<int>[BUCKET_SIZE, BUCKET_SIZE];
         for (int y = 0; y < BUCKET_SIZE; y++)
             for (int x = 0; x < BUCKET_SIZE; x++)
-                buckets[x, y] = new List<TectonicCell>();
+                buckets[x, y] = new List<int>();
 
-        foreach (TectonicCell cell in cells)
+        for (int i = 0; i < cells.Length; i++)
         {
-            Vector2 uv = UVHelper.SphereToUV(cell.position);
+            Vector2 uv = UVHelper.SphereToUV(cells[i].position);
             int bx = Mathf.Clamp((int)(uv.x * BUCKET_SIZE), 0, BUCKET_SIZE - 1);
             int by = Mathf.Clamp((int)(uv.y * BUCKET_SIZE), 0, BUCKET_SIZE - 1);
-            buckets[bx, by].Add(cell);
+            buckets[bx, by].Add(i);
         }
     }
 
@@ -201,7 +201,7 @@ public class GenerateTectonics
 
     // Returns cells in the bucket containing point plus all 8 neighboring buckets.
     // Far cheaper than searching all cells — use this instead of iterating tectonics.cells directly.
-    IEnumerable<TectonicCell> GetNearbyCells(Vector3 point)
+    IEnumerable<int> GetNearbyCells(Vector3 point)
     {
         Vector2 uv = UVHelper.SphereToUV(point);
         int bx = Mathf.Clamp((int)(uv.x * BUCKET_SIZE), 0, BUCKET_SIZE - 1);
@@ -217,39 +217,39 @@ public class GenerateTectonics
 
                 if (ny < 0 || ny >= BUCKET_SIZE) continue;
 
-                foreach (TectonicCell cell in buckets[nx, ny])
-                    yield return cell;
+                foreach (int idx in buckets[nx, ny])
+                    yield return idx;
             }
         }
     }
 
     // Returns the nearest tectonic cell to a point on the unit sphere.
-    public TectonicCell GetNearestCell(Vector3 point)
+    public int GetNearestCell(Vector3 point)
     {
-        TectonicCell nearest = null;
+        int nearest = -1;
         float nearestDist = float.MaxValue;
 
-        foreach (TectonicCell cell in GetNearbyCells(point))
+        foreach (int i in GetNearbyCells(point))
         {
-            float dist = Vector3.SqrMagnitude(point - cell.position);
+            float dist = Vector3.SqrMagnitude(point - cells[i].position);
             if (dist < nearestDist)
             {
                 nearestDist = dist;
-                nearest = cell;
+                nearest = i;
             }
         }
 
         // Fallback to full search if bucket search returns nothing
         // Can happen at poles or seam where buckets may be sparse
-        if (nearest == null)
+        if (nearest == -1)
         {
-            foreach (TectonicCell cell in cells)
+            for (int i = 0; i < cells.Length; i++)
             {
-                float dist = Vector3.SqrMagnitude(point - cell.position);
+                float dist = Vector3.SqrMagnitude(point - cells[i].position);
                 if (dist < nearestDist)
                 {
                     nearestDist = dist;
-                    nearest = cell;
+                    nearest = i;
                 }
             }
         }
@@ -259,32 +259,32 @@ public class GenerateTectonics
 
     // Returns the nearest cell excluding a specific cell.
     // Used for smooth voronoi blending — finds the second nearest cell to blend toward.
-    public TectonicCell GetSecondNearestCell(Vector3 point, TectonicCell exclude)
+    public int GetSecondNearestCell(Vector3 point, int exclude)
     {
-        TectonicCell nearest = null;
+        int nearest = -1;
         float nearestDist = float.MaxValue;
 
-        foreach (TectonicCell cell in GetNearbyCells(point))
+        foreach (int i in GetNearbyCells(point))
         {
-            if (cell == exclude) continue;
-            float dist = Vector3.SqrMagnitude(point - cell.position);
+            if (i == exclude) continue;
+            float dist = Vector3.SqrMagnitude(point - cells[i].position);
             if (dist < nearestDist)
             {
                 nearestDist = dist;
-                nearest = cell;
+                nearest = i;
             }
         }
 
-        if (nearest == null)
+        if (nearest == -1)
         {
-            foreach (TectonicCell cell in cells)
+            for (int i = 0; i < cells.Length; i++)
             {
-                if (cell == exclude) continue;
-                float dist = Vector3.SqrMagnitude(point - cell.position);
+                if (i == exclude) continue;
+                float dist = Vector3.SqrMagnitude(point - cells[i].position);
                 if (dist < nearestDist)
                 {
                     nearestDist = dist;
-                    nearest = cell;
+                    nearest = i;
                 }
             }
         }
@@ -295,7 +295,7 @@ public class GenerateTectonics
     // Steps one average cell spacing from origin along direction,
     // then finds the nearest cell to that point.
     // direction should be normalized.
-    public TectonicCell GetCellInDirection(Vector3 origin, Vector3 direction)
+    public int GetCellInDirection(Vector3 origin, Vector3 direction)
     {
         Vector3 target = (origin + direction * averageCellSpacing).normalized;
         return GetNearestCell(target);
@@ -309,18 +309,18 @@ public class GenerateTectonics
         float weightedMoisture = 0f;
         float blendRadius = averageCellSpacing * 2f;
 
-        foreach (TectonicCell cell in GetCellsInRadius(point, blendRadius))
+        foreach (int i in GetCellsInRadius(point, blendRadius))
         {
-            float dist = Vector3.Distance(point, cell.position);
+            float dist = Vector3.Distance(point, cells[i].position);
             float weight = 1f / (dist * dist + 0.0001f);
-            weightedMoisture += cell.moistureLevel * weight;
+            weightedMoisture += cells[i].moistureLevel * weight;
             totalWeight += weight;
         }
 
         if (totalWeight <= 0f)
         {
-            TectonicCell nearest = GetNearestCell(point);
-            return nearest != null ? nearest.moistureLevel : 0f;
+            int nearest = GetNearestCell(point);
+            return nearest != -1 ? cells[nearest].moistureLevel : 0f;
         }
 
         return weightedMoisture / totalWeight;
@@ -335,31 +335,31 @@ public class GenerateTectonics
         float weightedElevation = 0f;
         float blendRadius = averageCellSpacing * 2f;
 
-        foreach (TectonicCell cell in GetCellsInRadius(point, blendRadius))
+        foreach (int i in GetCellsInRadius(point, blendRadius))
         {
-            float dist = Vector3.Distance(point, cell.position);
+            float dist = Vector3.Distance(point, cells[i].position);
             float weight = 1f / (dist * dist + 0.0001f);
-            weightedElevation += cell.baseElevation * weight;
+            weightedElevation += cells[i].baseElevation * weight;
             totalWeight += weight;
         }
        
         //Fallback - if no cell found in radius, use nearest cell directly.
         if (totalWeight <= 0f)
         {
-            TectonicCell nearest = GetNearestCell(point);
-            return nearest != null ? nearest.baseElevation : 0f;
+            int nearest = GetNearestCell(point);
+            return nearest != -1 ? cells[nearest].baseElevation : 0f;
         }
         return totalWeight > 0 ? weightedElevation / totalWeight : 0f;
     }
 
     // Returns all cells within the given radius of a point.
     // Used by TectonicInfluenceMap to evaluate nearby cell relationships.
-    public IEnumerable<TectonicCell> GetCellsInRadius(Vector3 point, float radius)
+    public IEnumerable<int> GetCellsInRadius(Vector3 point, float radius)
     {
-        foreach (TectonicCell cell in GetNearbyCells(point))
+        foreach (int i in GetNearbyCells(point))
         {
-            if (Vector3.Distance(point, cell.position) <= radius)
-                yield return cell;
+            if (Vector3.Distance(point, cells[i].position) <= radius)
+                yield return i;
         }
     }
 
@@ -367,18 +367,18 @@ public class GenerateTectonics
 
     // Returns the nearest already-assigned cell to a point.
     // Used as a fallback during weighted data assignment for isolated cells.
-    TectonicCell GetNearestAssigned(Vector3 point, HashSet<TectonicCell> assigned)
+    int GetNearestAssigned(Vector3 point, HashSet<int> assigned)
     {
-        TectonicCell nearest = null;
+        int nearest = -1;
         float nearestDist = float.MaxValue;
 
-        foreach (TectonicCell cell in assigned)
+        foreach (int idx in assigned)
         {
-            float dist = Vector3.SqrMagnitude(point - cell.position);
+            float dist = Vector3.SqrMagnitude(point - cells[idx].position);
             if (dist < nearestDist)
             {
                 nearestDist = dist;
-                nearest = cell;
+                nearest = idx;
             }
         }
 

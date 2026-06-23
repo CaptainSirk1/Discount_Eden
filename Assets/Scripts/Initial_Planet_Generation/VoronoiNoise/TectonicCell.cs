@@ -2,8 +2,7 @@ using UnityEngine;
 
 
 // Data container to store planetary Terrain/Climate settings within individual voronoi points.
-[System.Serializable]
-public class TectonicCell
+public struct TectonicCell
 {
     // A given point's position on the sphere
     public Vector3 position;
@@ -11,7 +10,8 @@ public class TectonicCell
     // Determines whether a given cell is a "continent center"
     // When assigning values, a selection fo continent center cells will be assigned random data. 
     // All other cells will be assigned weighted data, pushed towards similarity with the nearest cell.
-    public bool isContinentCenter;
+    // 0 = false, 1 = true.
+    public byte isContinentCenter;
 
     // This value will inform how this cell appears on the heightmap and comprehensive view.
     [Range(-1, 1)]public float baseElevation;

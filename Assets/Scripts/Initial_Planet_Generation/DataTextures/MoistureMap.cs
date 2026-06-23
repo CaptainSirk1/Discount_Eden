@@ -12,9 +12,6 @@ public class MoistureMap
     HeightMap height;
     TectonicInfluenceMap influence;
 
-    Queue<TectonicCell> frontier = new Queue<TectonicCell>();
-    HashSet<TectonicCell> assigned = new HashSet<TectonicCell>();
-
     public Texture2D moisture {get; private set;}
 
     public MoistureMap( ClimateSettings cSettings, 
@@ -33,45 +30,50 @@ public class MoistureMap
 
     public void Generate()
     {
-        AssignOceanMoisture();
-        AssignDerivedMoisture();
+        Queue<int> frontier = new Queue<int>();
+        HashSet<int> assigned = new HashSet<int>();
+        AssignOceanMoisture(frontier, assigned);
+        AssignDerivedMoisture(frontier, assigned);
         moisture = GenerateMoistureMap();
     }
 
-    public void AssignOceanMoisture()
+    void AssignOceanMoisture(Queue<int> frontier, HashSet<int> assigned)
     {
-        float oceanThreshold = cSettings.globalMoisture *2f - 1;
-        foreach (TectonicCell cell in tectonics.cells)
+        float oceanThreshold = cSettings.globalMoisture * 2f - 1f;
+        for (int i = 0; i < tectonics.cells.Length; i++)
         {
-            if (cell.baseElevation < oceanThreshold)
+            if (tectonics.cells[i].baseElevation < oceanThreshold)
             {
-                cell.moistureLevel = 1;
-                frontier.Enqueue(cell);
-                assigned.Add(cell);
+                tectonics.cells[i].moistureLevel = 1f;
+                frontier.Enqueue(i);
+                assigned.Add(i);
             }
         }
     }
-    public void AssignDerivedMoisture()
+
+    void AssignDerivedMoisture(Queue<int> frontier, HashSet<int> assigned)
     {
         while (frontier.Count > 0)
         {
-            TectonicCell current = frontier.Dequeue();
+            int currentIdx = frontier.Dequeue();
+            TectonicCell current = tectonics.cells[currentIdx];
             Vector3 direction = WindTempMap.CalculateWindVector3D(current.position);
-            TectonicCell next = tectonics.GetCellInDirection(current.position, direction);
-            if (next == null || next == current || assigned.Contains(next)) continue;
+            int nextIdx = tectonics.GetCellInDirection(current.position, direction);
 
-            Vector3 boundarySample = ((current.position + next.position) * 0.5f).normalized;
-            
+            if (nextIdx == -1 || nextIdx == currentIdx || assigned.Contains(nextIdx)) continue;
+
+            Vector3 boundarySample = ((current.position + tectonics.cells[nextIdx].position) * 0.5f).normalized;
             Vector2 uv = UVHelper.SphereToUV(boundarySample);
             Color influenceColor = influence.tectonicInfluence.GetPixelBilinear(uv.x, uv.y);
-
             float moistureShield = influenceColor.r + influenceColor.b;
 
-            next.moistureLevel = Mathf.Clamp01(current.moistureLevel - (0.01f + moistureShield * tSettings.shieldMultiplier));
-            if (next.moistureLevel > 0f)
+            float newMoisture = Mathf.Clamp01(current.moistureLevel - (0.01f + moistureShield * tSettings.shieldMultiplier));
+            tectonics.cells[nextIdx].moistureLevel = newMoisture;
+
+            if (newMoisture > 0f)
             {
-            assigned.Add(next);
-            frontier.Enqueue(next);
+                assigned.Add(nextIdx);
+                frontier.Enqueue(nextIdx);
             }
         }
     }
@@ -92,9 +94,8 @@ public class MoistureMap
                 float v = y / (float)(MAP_HEIGHT - 1);
 
                 Vector3 spherePoint = UVHelper.UVToSphere(u, v);
-                Vector3 warpedPoint = UVHelper.WarpSpherePoint(spherePoint, tSettings.warpNoise, tSettings.worldSeed);
 
-                Vector2 heightUV = UVHelper.SphereToUV(warpedPoint);
+                Vector2 heightUV = UVHelper.SphereToUV(spherePoint);
                 Color heightSample = height.height.GetPixelBilinear(heightUV.x, heightUV.y);
                 float elevation = heightSample.r;
 
@@ -115,7 +116,7 @@ public class MoistureMap
                 else
                 {
                     // Land — elevation above sea level in -1/1 space
-                    float blendedMoisture = tectonics.GetBlendedMoisture(warpedPoint);
+                    float blendedMoisture = tectonics.GetBlendedMoisture(spherePoint);
                     float elevationAboveSeaLevel = Mathf.Max(0, elevationRaw - oceanThreshold);
                     float moistureValue = Mathf.Clamp01(blendedMoisture - elevationAboveSeaLevel * 0.3f);
                     pixelColor = Color.Lerp(dryColor, wetColor, moistureValue);

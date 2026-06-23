@@ -70,16 +70,20 @@ public class TectonicInfluenceMap
                 float u = x / (float)(UVHelper.MAP_WIDTH - 1);
                 float v = y / (float)(UVHelper.MAP_HEIGHT - 1);
 
-                Vector3 spherePoint = UVHelper.UVToSphere(u, v);
-                Vector3 warpedPoint = UVHelper.WarpSpherePoint(spherePoint, settings.warpNoise, settings.worldSeed);
-                TectonicCell cell = tectonics.GetNearestCell(warpedPoint);
-
                 float convergentStrength = 0f;
                 float divergentStrength = 0f;
 
-                foreach (TectonicCell neighbor in tectonics.GetCellsInRadius(cell.position, neighborRadius))
+                Vector3 spherePoint = UVHelper.UVToSphere(u, v);
+                Vector3 warpedPoint = UVHelper.WarpSpherePoint(spherePoint, settings.warpNoise, settings.worldSeed);
+
+                int cellIdx = tectonics.GetNearestCell(warpedPoint);
+                if (cellIdx == -1) continue;
+                TectonicCell cell = tectonics.cells[cellIdx];
+
+                foreach (int neighborIdx in tectonics.GetCellsInRadius(cell.position, neighborRadius))
                 {
-                    if (neighbor == cell) continue;
+                    TectonicCell neighbor = tectonics.cells[neighborIdx];
+                    if (neighborIdx == cellIdx) continue;
 
                     float cellToNeighbor = Vector3.Distance(cell.position, neighbor.position);
 
