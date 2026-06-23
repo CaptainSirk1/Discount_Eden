@@ -14,9 +14,9 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::NoiseSettings
   additiveLayer: {fileID: 0}
   additiveStrength: 0.5
-  noiseType: 1
+  noiseType: 0
   octaves: 4
-  scale: 2
+  scale: 5
   lacunarity: 2
   persistence: 0.5
   strength: 0.1

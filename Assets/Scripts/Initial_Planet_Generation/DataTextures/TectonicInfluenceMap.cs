@@ -76,14 +76,29 @@ public class TectonicInfluenceMap
                 Vector3 spherePoint = UVHelper.UVToSphere(u, v);
                 Vector3 warpedPoint = UVHelper.WarpSpherePoint(spherePoint, settings.warpNoise, settings.worldSeed);
 
-                int cellIdx = tectonics.GetNearestCell(warpedPoint);
+                int cellIdx = -1;
+                float nearestDist = float.MaxValue;
+                
+                foreach (int i in tectonics.GetNearbyCells(warpedPoint))
+                {
+                    float dist = Vector3.SqrMagnitude(warpedPoint - tectonics.cells[i].position);
+                    
+                    // Track nearest cell
+                    if (dist < nearestDist)
+                    {
+                        nearestDist = dist;
+                        cellIdx = i;
+                    }
+                }
+
                 if (cellIdx == -1) continue;
                 TectonicCell cell = tectonics.cells[cellIdx];
 
-                foreach (int neighborIdx in tectonics.GetCellsInRadius(cell.position, neighborRadius))
+                // Now evaluate neighbors in the same bucket neighborhood
+                foreach (int neighborIdx in tectonics.GetNearbyCells(warpedPoint))
                 {
-                    TectonicCell neighbor = tectonics.cells[neighborIdx];
                     if (neighborIdx == cellIdx) continue;
+                    TectonicCell neighbor = tectonics.cells[neighborIdx];
 
                     float cellToNeighbor = Vector3.Distance(cell.position, neighbor.position);
 

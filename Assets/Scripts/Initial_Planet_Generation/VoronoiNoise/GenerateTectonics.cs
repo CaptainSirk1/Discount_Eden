@@ -38,8 +38,8 @@ public class GenerateTectonics
         JitterPositions();
         SelectContinentCenters();
         AssignContinentCenterData();
-        AssignWeightedData();
         BuildSpatialBuckets();
+        AssignWeightedData();
     }
 
     TectonicCell[] GenerateFibonacciSphere()
@@ -143,7 +143,7 @@ public class GenerateTectonics
         {
             int current = frontier.Dequeue();
 
-            for (int i = 0; i < cells.Length; i++)
+            foreach (int i in GetNearbyCells(cells[current].position))
             {
                 if (assigned.Contains(i)) continue;
                 if (Vector3.Distance(cells[current].position, cells[i].position) > neighborRadius) continue;
@@ -201,7 +201,7 @@ public class GenerateTectonics
 
     // Returns cells in the bucket containing point plus all 8 neighboring buckets.
     // Far cheaper than searching all cells — use this instead of iterating tectonics.cells directly.
-    IEnumerable<int> GetNearbyCells(Vector3 point)
+    public IEnumerable<int> GetNearbyCells(Vector3 point)
     {
         Vector2 uv = UVHelper.SphereToUV(point);
         int bx = Mathf.Clamp((int)(uv.x * BUCKET_SIZE), 0, BUCKET_SIZE - 1);
