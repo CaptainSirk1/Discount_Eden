@@ -53,18 +53,21 @@ public class MoistureMap
 
     void AssignDerivedMoisture(Queue<int> frontier, HashSet<int> assigned)
     {
+        List<int> nearbyScratchpad = new List<int>();
         while (frontier.Count > 0)
         {
             int currentIdx = frontier.Dequeue();
             TectonicCell current = tectonics.cells[currentIdx];
             Vector3 direction = WindTempMap.CalculateWindVector3D(current.position);
-            int nextIdx = tectonics.GetCellInDirection(current.position, direction);
+            int nextIdx = tectonics.GetCellInDirection(current.position, direction, nearbyScratchpad);
 
             if (nextIdx == -1 || nextIdx == currentIdx || assigned.Contains(nextIdx)) continue;
 
             Vector3 boundarySample = ((current.position + tectonics.cells[nextIdx].position) * 0.5f).normalized;
             Vector2 uv = UVHelper.SphereToUV(boundarySample);
-            Color influenceColor = influence.tectonicInfluence.GetPixelBilinear(uv.x, uv.y);
+            
+            // Optimization #4: Use raw array access helper for boundary sample
+            Color influenceColor = UVHelper.GetPixelBilinear(influence.influenceData, uv.x, uv.y);
             float moistureShield = influenceColor.r + influenceColor.b;
 
             float newMoisture = Mathf.Clamp01(current.moistureLevel - (0.01f + moistureShield * tSettings.shieldMultiplier));
@@ -86,21 +89,41 @@ public class MoistureMap
         Color dryColor = new Color(0.6f, 0.55f, 0.32f); // Desert tan
         Color wetColor = new Color(0.1f, 0.55f, 0.05f); // Deep green
 
+        // Pre-compute trigonometric values
+        float[] cosLong = new float[MAP_WIDTH];
+        float[] sinLong = new float[MAP_WIDTH];
+        for (int x = 0; x < MAP_WIDTH; x++)
+        {
+            float u = x / (float)(MAP_WIDTH - 1);
+            float longitude = (u - 0.5f) * 2f * Mathf.PI;
+            cosLong[x] = Mathf.Cos(longitude);
+            sinLong[x] = Mathf.Sin(longitude);
+        }
+
+        float[] cosLat = new float[MAP_HEIGHT];
+        float[] sinLat = new float[MAP_HEIGHT];
         for (int y = 0; y < MAP_HEIGHT; y++)
         {
+            float v = y / (float)(MAP_HEIGHT - 1);
+            float latitude = (0.5f - v) * Mathf.PI;
+            cosLat[y] = Mathf.Cos(latitude);
+            sinLat[y] = Mathf.Sin(latitude);
+        }
+
+        List<int> nearbyScratchpad = new List<int>();
+
+        for (int y = 0; y < MAP_HEIGHT; y++)
+        {
+            float cLat = cosLat[y];
+            float sLat = sinLat[y];
+
             for (int x = 0; x < MAP_WIDTH; x++)
             {
-                float u = x / (float)(MAP_WIDTH - 1);
-                float v = y / (float)(MAP_HEIGHT - 1);
-
-                Vector3 spherePoint = UVHelper.UVToSphere(u, v);
-
-                Vector2 heightUV = UVHelper.SphereToUV(spherePoint);
-                Color heightSample = height.height.GetPixelBilinear(heightUV.x, heightUV.y);
+                // Optimization #4: Use raw array access instead of GetPixelBilinear
+                Color heightSample = height.heightData[y * MAP_WIDTH + x];
                 float elevation = heightSample.r;
 
                 // Convert texture space elevation back to -1/1 elevation space
-                // Inverse of (elevation + 1f) / 4f
                 float elevationRaw = (elevation * 4f) - 1f;
 
                 // Now compare directly against oceanThreshold in -1/1 space
@@ -116,7 +139,8 @@ public class MoistureMap
                 else
                 {
                     // Land — elevation above sea level in -1/1 space
-                    float blendedMoisture = tectonics.GetBlendedMoisture(spherePoint);
+                    Vector3 spherePoint = new Vector3(cLat * cosLong[x], sLat, cLat * sinLong[x]);
+                    float blendedMoisture = tectonics.GetBlendedMoisture(spherePoint, nearbyScratchpad);
                     float elevationAboveSeaLevel = Mathf.Max(0, elevationRaw - oceanThreshold);
                     float moistureValue = Mathf.Clamp01(blendedMoisture - elevationAboveSeaLevel * 0.3f);
                     pixelColor = Color.Lerp(dryColor, wetColor, moistureValue);

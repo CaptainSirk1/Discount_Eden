@@ -11,9 +11,9 @@ using System.Collections.Generic;
 // If you're looking to change something about how the planet looks, this script is largely irrelevant.
 public class CubeSphereFace
 {
+    public int resolution { get; private set; }
     TerrainShapeGenerator shapeGen;
     Mesh mesh;
-    int resolution;
     
     // localForward will be SomeVector[x, y, z]: X covers the global left/right axis, Y covers up/down, and Z covers forward/back.
     // If your standing in "front" of the final cube sphere, the localForward of right side face of the sphere would be [1, 0, 0]
@@ -22,6 +22,12 @@ public class CubeSphereFace
     Vector3 axisA;
     Vector3 axisB;
 
+    // Optimization #5: Pre-allocated arrays to avoid GC pressure
+    Vector3[] vertices;
+    Vector2[] uvs;
+    int[] triangles;
+    Dictionary<int, int> duplicateCache = new Dictionary<int, int>();
+
     public CubeSphereFace(TerrainShapeGenerator shapeGen, Mesh mesh, int resolution, Vector3 localForward)
     {
         this.shapeGen = shapeGen;
@@ -29,26 +35,23 @@ public class CubeSphereFace
         this.resolution = resolution;
         this.localForward = localForward;
 
-        // Create a new Vector based on localForward, ordered y, z, x instead of x, y, z.
-        // If LocalForward was [1, 0, 0], AxisA would be [0, 0, 1].
-        // The cross product automatically produces the correct B axis using our existing axis'. 
-        // Just using the same shuffle method again would invert half your normals. For some reason.
-        // This essenitally gives each of your faces a complete set of local axis, all perpendicular to eachother. 
-        // Note: This shuffle method only works when localForward is a cardinal direction, which it always will be for the sake of our cube sphere.
         axisA = new Vector3(localForward.y, localForward.z, localForward.x); 
         axisB = Vector3.Cross(localForward, axisA);
+
+        // Pre-allocate buffers. Max vertices: Base + Seam duplication (max 1 column)
+        // A column is 'resolution' vertices.
+        int baseVertexCount = resolution * resolution;
+        vertices = new Vector3[baseVertexCount + resolution + 10]; 
+        uvs = new Vector2[vertices.Length];
+        triangles = new int[(resolution - 1) * (resolution - 1) * 6];
     }
 
     public void ConstructMesh()
     {
-        List<Vector3> vertexList = new List<Vector3>();
-        List<Vector2> uvList = new List<Vector2>();
-        List<int> triangleList = new List<int>();
+        int vertexCount = resolution * resolution;
+        duplicateCache.Clear();
 
-        // First pass — build all vertices and UVs exactly as before
-        Vector3[] baseVertices = new Vector3[resolution * resolution];
-        Vector2[] baseUVs = new Vector2[resolution * resolution];
-
+        // Optimization #6: Single normalization pass
         for (int y = 0; y < resolution; y++)
         {
             for (int x = 0; x < resolution; x++)
@@ -56,74 +59,77 @@ public class CubeSphereFace
                 int i = x + y * resolution;
                 Vector2 percent = new Vector2(x, y) / (resolution - 1);
                 Vector3 pointOnUnitCube = localForward + (percent.x - 0.5f) * 2 * axisA + (percent.y - 0.5f) * 2 * axisB;
+                
+                Vector3 normalizedPoint = pointOnUnitCube.normalized;
 
-                baseVertices[i] = shapeGen.CalculatePointOnPlanet(pointOnUnitCube.normalized);
-                baseUVs[i] = UVHelper.SphereToUV(pointOnUnitCube.normalized);
+                // Optimization #6: Inline simple radius calculation
+                vertices[i] = normalizedPoint * shapeGen.settings.planetRadius;
+                uvs[i] = UVHelper.SphereToUV(normalizedPoint);
             }
         }
 
-        // Add all base vertices to lists
-        vertexList.AddRange(baseVertices);
-        uvList.AddRange(baseUVs);
+        int triIndex = 0;
+        int currentVertexCount = vertexCount;
 
-        // Second pass — build triangles, duplicating vertices at the seam
         for (int y = 0; y < resolution - 1; y++)
         {
             for (int x = 0; x < resolution - 1; x++)
             {
                 int i = x + y * resolution;
 
-                // The two triangles that make up this quad
-                int[] quadTriangles = new int[]
-                {
-                    i, i + resolution + 1, i + resolution,
-                    i, i + 1, i + resolution + 1
-                };
+                int iA = i;
+                int iB = i + resolution + 1;
+                int iC = i + resolution;
+                int iD = i + 1;
 
-                // Process each triangle
-                for (int t = 0; t < 2; t++)
-                {
-                    int idxA = quadTriangles[t * 3];
-                    int idxB = quadTriangles[t * 3 + 1];
-                    int idxC = quadTriangles[t * 3 + 2];
-
-                    float uA = uvList[idxA].x;
-                    float uB = uvList[idxB].x;
-                    float uC = uvList[idxC].x;
-
-                    bool crossesSeam = Mathf.Abs(uA - uB) > 0.5f ||
-                                    Mathf.Abs(uB - uC) > 0.5f ||
-                                    Mathf.Abs(uA - uC) > 0.5f;
-
-                    if (crossesSeam)
-                    {
-                        // Duplicate any vertex that's on the low side of the seam
-                        // giving it a UV shifted up by 1, leaving the original untouched
-                        if (uA < 0.5f) idxA = DuplicateVertex(idxA, 1f, vertexList, uvList);
-                        if (uB < 0.5f) idxB = DuplicateVertex(idxB, 1f, vertexList, uvList);
-                        if (uC < 0.5f) idxC = DuplicateVertex(idxC, 1f, vertexList, uvList);
-                    }
-
-                    triangleList.Add(idxA);
-                    triangleList.Add(idxB);
-                    triangleList.Add(idxC);
-                }
+                // Process first triangle (A, B, C)
+                ProcessTriangle(iA, iB, iC, ref currentVertexCount, ref triIndex);
+                // Process second triangle (A, D, B)
+                ProcessTriangle(iA, iD, iB, ref currentVertexCount, ref triIndex);
             }
         }
+
         mesh.Clear();
-        mesh.vertices = vertexList.ToArray();
-        mesh.triangles = triangleList.ToArray();
-        mesh.uv = uvList.ToArray();
+        // Optimization #5: Use SetVertices/SetTriangles with counts to avoid ToArray()
+        mesh.SetVertices(vertices, 0, currentVertexCount);
+        mesh.SetUVs(0, uvs, 0, currentVertexCount);
+        mesh.SetTriangles(triangles, 0, triIndex, 0);
         mesh.RecalculateNormals();
     }
 
-    // Creates a copy of a vertex with its U coordinate shifted by uOffset.
-    // Returns the index of the new duplicate in the vertex list.
-    int DuplicateVertex(int originalIndex, float uOffset, List<Vector3> vertices, List<Vector2> uvs)
+    void ProcessTriangle(int a, int b, int c, ref int currentCount, ref int triIdx)
     {
-        int newIndex = vertices.Count;
-        vertices.Add(vertices[originalIndex]);
-        uvs.Add(new Vector2(uvs[originalIndex].x + uOffset, uvs[originalIndex].y));
+        float uA = uvs[a].x;
+        float uB = uvs[b].x;
+        float uC = uvs[c].x;
+
+        bool crossesSeam = Mathf.Abs(uA - uB) > 0.5f ||
+                          Mathf.Abs(uB - uC) > 0.5f ||
+                          Mathf.Abs(uA - uC) > 0.5f;
+
+        if (crossesSeam)
+        {
+            if (uA < 0.5f) a = GetOrCreateDuplicate(a, ref currentCount);
+            if (uB < 0.5f) b = GetOrCreateDuplicate(b, ref currentCount);
+            if (uC < 0.5f) c = GetOrCreateDuplicate(c, ref currentCount);
+        }
+
+        triangles[triIdx++] = a;
+        triangles[triIdx++] = b;
+        triangles[triIdx++] = c;
+    }
+
+    int GetOrCreateDuplicate(int originalIndex, ref int currentCount)
+    {
+        if (duplicateCache.TryGetValue(originalIndex, out int existingIndex))
+        {
+            return existingIndex;
+        }
+
+        int newIndex = currentCount++;
+        vertices[newIndex] = vertices[originalIndex];
+        uvs[newIndex] = new Vector2(uvs[originalIndex].x + 1f, uvs[originalIndex].y);
+        duplicateCache.Add(originalIndex, newIndex);
         return newIndex;
     }
 }

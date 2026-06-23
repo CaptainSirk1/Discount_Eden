@@ -2,7 +2,7 @@ using UnityEngine;
 
 public class TerrainShapeGenerator
 {
-    TerrainSettings settings;
+    public TerrainSettings settings { get; private set; }
 
     public TerrainShapeGenerator(TerrainSettings settings)
     {

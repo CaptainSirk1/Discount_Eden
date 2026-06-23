@@ -43,12 +43,15 @@ public class PlanetGenerator : MonoBehaviour
         {
             meshFilters = new MeshFilter[6];
         }
-        // There will always be 6 cube sphere faces. 
-        terrainFaces = new CubeSphereFace[6];
-        
-        // The number of renderers and materials may need to increase if additional textures are added.
-        meshRenderers = new MeshRenderer[6];
-        faceMaterials = new Material[6];
+
+        // Optimization #5: Reuse face objects and their internal buffers if resolution matches
+        bool needsNewFaces = terrainFaces == null || terrainFaces.Length != 6;
+        if (needsNewFaces)
+        {
+            terrainFaces = new CubeSphereFace[6];
+            meshRenderers = new MeshRenderer[6];
+            faceMaterials = new Material[6];
+        }
 
         Vector3[] directions = {Vector3.up, Vector3.down, Vector3.left, Vector3.right, Vector3.forward, Vector3.back };
 
@@ -63,13 +66,20 @@ public class PlanetGenerator : MonoBehaviour
                 meshFilters[i].sharedMesh = new Mesh();
             }
             
-            terrainFaces[i] = new CubeSphereFace(shapeGen, meshFilters[i].sharedMesh, resolution, directions[i]);
+            // Only recreate face if necessary (e.g. resolution changed)
+            if (needsNewFaces || terrainFaces[i].resolution != resolution)
+            {
+                terrainFaces[i] = new CubeSphereFace(shapeGen, meshFilters[i].sharedMesh, resolution, directions[i]);
+            }
 
             // Cache renderer and material so GenerateColors doesn't have to search for them
             meshRenderers[i] = meshFilters[i].GetComponent<MeshRenderer>();
             faceMaterials[i] = meshRenderers[i].sharedMaterial;
         }
     }
+
+    // Optimization #5: Exposed property to allow checking if buffers need resizing
+    public int resolutionValue => resolution;
     public void GeneratePlanet()
     {
         tectonics = new GenerateTectonics(terrainSettings);

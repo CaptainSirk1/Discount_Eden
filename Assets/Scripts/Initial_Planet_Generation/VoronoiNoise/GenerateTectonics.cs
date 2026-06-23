@@ -139,14 +139,17 @@ public class GenerateTectonics
             assigned.Add(i);
         }
 
+        List<int> nearby = new List<int>();
+        float neighborRadiusSq = neighborRadius * neighborRadius;
         while (frontier.Count > 0)
         {
             int current = frontier.Dequeue();
 
-            foreach (int i in GetNearbyCells(cells[current].position))
+            GetNearbyCells(cells[current].position, nearby);
+            foreach (int i in nearby)
             {
                 if (assigned.Contains(i)) continue;
-                if (Vector3.Distance(cells[current].position, cells[i].position) > neighborRadius) continue;
+                if (Vector3.SqrMagnitude(cells[current].position - cells[i].position) > neighborRadiusSq) continue;
 
                 AssignWeightedFromNeighbor(i, current);
                 assigned.Add(i);
@@ -199,10 +202,11 @@ public class GenerateTectonics
 
     // --- Spatial Queries ---
 
-    // Returns cells in the bucket containing point plus all 8 neighboring buckets.
+    // Populates the provided list with cells in the bucket containing point plus all 8 neighboring buckets.
     // Far cheaper than searching all cells — use this instead of iterating tectonics.cells directly.
-    public IEnumerable<int> GetNearbyCells(Vector3 point)
+    public void GetNearbyCells(Vector3 point, List<int> results)
     {
+        results.Clear();
         Vector2 uv = UVHelper.SphereToUV(point);
         int bx = Mathf.Clamp((int)(uv.x * BUCKET_SIZE), 0, BUCKET_SIZE - 1);
         int by = Mathf.Clamp((int)(uv.y * BUCKET_SIZE), 0, BUCKET_SIZE - 1);
@@ -217,24 +221,26 @@ public class GenerateTectonics
 
                 if (ny < 0 || ny >= BUCKET_SIZE) continue;
 
-                foreach (int idx in buckets[nx, ny])
-                    yield return idx;
+                results.AddRange(buckets[nx, ny]);
             }
         }
     }
 
     // Returns the nearest tectonic cell to a point on the unit sphere.
-    public int GetNearestCell(Vector3 point)
+    public int GetNearestCell(Vector3 point, List<int> scratchpad = null)
     {
         int nearest = -1;
-        float nearestDist = float.MaxValue;
+        float nearestDistSq = float.MaxValue;
 
-        foreach (int i in GetNearbyCells(point))
+        List<int> nearby = scratchpad ?? new List<int>(); 
+        GetNearbyCells(point, nearby);
+
+        foreach (int i in nearby)
         {
-            float dist = Vector3.SqrMagnitude(point - cells[i].position);
-            if (dist < nearestDist)
+            float distSq = Vector3.SqrMagnitude(point - cells[i].position);
+            if (distSq < nearestDistSq)
             {
-                nearestDist = dist;
+                nearestDistSq = distSq;
                 nearest = i;
             }
         }
@@ -245,10 +251,10 @@ public class GenerateTectonics
         {
             for (int i = 0; i < cells.Length; i++)
             {
-                float dist = Vector3.SqrMagnitude(point - cells[i].position);
-                if (dist < nearestDist)
+                float distSq = Vector3.SqrMagnitude(point - cells[i].position);
+                if (distSq < nearestDistSq)
                 {
-                    nearestDist = dist;
+                    nearestDistSq = distSq;
                     nearest = i;
                 }
             }
@@ -259,18 +265,21 @@ public class GenerateTectonics
 
     // Returns the nearest cell excluding a specific cell.
     // Used for smooth voronoi blending — finds the second nearest cell to blend toward.
-    public int GetSecondNearestCell(Vector3 point, int exclude)
+    public int GetSecondNearestCell(Vector3 point, int exclude, List<int> scratchpad = null)
     {
         int nearest = -1;
-        float nearestDist = float.MaxValue;
+        float nearestDistSq = float.MaxValue;
 
-        foreach (int i in GetNearbyCells(point))
+        List<int> nearby = scratchpad ?? new List<int>();
+        GetNearbyCells(point, nearby);
+
+        foreach (int i in nearby)
         {
             if (i == exclude) continue;
-            float dist = Vector3.SqrMagnitude(point - cells[i].position);
-            if (dist < nearestDist)
+            float distSq = Vector3.SqrMagnitude(point - cells[i].position);
+            if (distSq < nearestDistSq)
             {
-                nearestDist = dist;
+                nearestDistSq = distSq;
                 nearest = i;
             }
         }
@@ -280,10 +289,10 @@ public class GenerateTectonics
             for (int i = 0; i < cells.Length; i++)
             {
                 if (i == exclude) continue;
-                float dist = Vector3.SqrMagnitude(point - cells[i].position);
-                if (dist < nearestDist)
+                float distSq = Vector3.SqrMagnitude(point - cells[i].position);
+                if (distSq < nearestDistSq)
                 {
-                    nearestDist = dist;
+                    nearestDistSq = distSq;
                     nearest = i;
                 }
             }
@@ -295,31 +304,34 @@ public class GenerateTectonics
     // Steps one average cell spacing from origin along direction,
     // then finds the nearest cell to that point.
     // direction should be normalized.
-    public int GetCellInDirection(Vector3 origin, Vector3 direction)
+    public int GetCellInDirection(Vector3 origin, Vector3 direction, List<int> scratchpad = null)
     {
         Vector3 target = (origin + direction * averageCellSpacing).normalized;
-        return GetNearestCell(target);
+        return GetNearestCell(target, scratchpad);
     }
 
     // Returns a distance-weighted blend of moisture across all nearby cells.
     // Produces smooth gradual transitions rather than hard voronoi edges.
-    public float GetBlendedMoisture(Vector3 point)
+    public float GetBlendedMoisture(Vector3 point, List<int> scratchpad = null)
     {
         float totalWeight = 0f;
         float weightedMoisture = 0f;
         float blendRadius = averageCellSpacing * 2f;
 
-        foreach (int i in GetCellsInRadius(point, blendRadius))
+        List<int> nearby = scratchpad ?? new List<int>();
+        GetCellsInRadius(point, blendRadius, nearby);
+
+        foreach (int i in nearby)
         {
-            float dist = Vector3.Distance(point, cells[i].position);
-            float weight = 1f / (dist * dist + 0.0001f);
+            float distSq = Vector3.SqrMagnitude(point - cells[i].position);
+            float weight = 1f / (distSq + 0.0001f);
             weightedMoisture += cells[i].moistureLevel * weight;
             totalWeight += weight;
         }
 
         if (totalWeight <= 0f)
         {
-            int nearest = GetNearestCell(point);
+            int nearest = GetNearestCell(point, scratchpad);
             return nearest != -1 ? cells[nearest].moistureLevel : 0f;
         }
 
@@ -329,16 +341,19 @@ public class GenerateTectonics
     // Returns a distance-weighted blend of elevation across all nearby cells.
     // Produces smooth gradual transitions rather than hard voronoi edges.
     // Called by HeightMap instead of iterating cells directly.
-    public float GetBlendedElevation(Vector3 point)
+    public float GetBlendedElevation(Vector3 point, List<int> scratchpad = null)
     {
         float totalWeight = 0f;
         float weightedElevation = 0f;
         float blendRadius = averageCellSpacing * 2f;
 
-        foreach (int i in GetCellsInRadius(point, blendRadius))
+        List<int> nearby = scratchpad ?? new List<int>();
+        GetCellsInRadius(point, blendRadius, nearby);
+
+        foreach (int i in nearby)
         {
-            float dist = Vector3.Distance(point, cells[i].position);
-            float weight = 1f / (dist * dist + 0.0001f);
+            float distSq = Vector3.SqrMagnitude(point - cells[i].position);
+            float weight = 1f / (distSq + 0.0001f);
             weightedElevation += cells[i].baseElevation * weight;
             totalWeight += weight;
         }
@@ -346,20 +361,25 @@ public class GenerateTectonics
         //Fallback - if no cell found in radius, use nearest cell directly.
         if (totalWeight <= 0f)
         {
-            int nearest = GetNearestCell(point);
+            int nearest = GetNearestCell(point, scratchpad);
             return nearest != -1 ? cells[nearest].baseElevation : 0f;
         }
         return totalWeight > 0 ? weightedElevation / totalWeight : 0f;
     }
 
-    // Returns all cells within the given radius of a point.
+    // Populates the provided list with all cells within the given radius of a point.
     // Used by TectonicInfluenceMap to evaluate nearby cell relationships.
-    public IEnumerable<int> GetCellsInRadius(Vector3 point, float radius)
+    public void GetCellsInRadius(Vector3 point, float radius, List<int> results)
     {
-        foreach (int i in GetNearbyCells(point))
+        GetNearbyCells(point, results);
+        float radiusSq = radius * radius;
+        for (int i = results.Count - 1; i >= 0; i--)
         {
-            if (Vector3.Distance(point, cells[i].position) <= radius)
-                yield return i;
+            int cellIdx = results[i];
+            if (Vector3.SqrMagnitude(point - cells[cellIdx].position) > radiusSq)
+            {
+                results.RemoveAt(i);
+            }
         }
     }
 

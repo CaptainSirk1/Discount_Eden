@@ -66,4 +66,27 @@ public static class UVHelper
         Vector3 offset = warpNoise.SampleWarp(point, seed);
         return (point + offset).normalized;
     }
+
+    // --- Array Sampling Helpers (Optimization #4) ---
+
+    // Performs bilinear interpolation on a raw color array.
+    // Much faster than Texture2D.GetPixelBilinear as it avoids GPU round-trips.
+    public static Color GetPixelBilinear(Color[] pixels, float u, float v)
+    {
+        float x = u * (MAP_WIDTH - 1);
+        float y = v * (MAP_HEIGHT - 1);
+        int x1 = Mathf.FloorToInt(x);
+        int x2 = Mathf.Min(x1 + 1, MAP_WIDTH - 1);
+        int y1 = Mathf.FloorToInt(y);
+        int y2 = Mathf.Min(y1 + 1, MAP_HEIGHT - 1);
+        float tx = x - x1;
+        float ty = y - y1;
+
+        Color c11 = pixels[y1 * MAP_WIDTH + x1];
+        Color c21 = pixels[y1 * MAP_WIDTH + x2];
+        Color c12 = pixels[y2 * MAP_WIDTH + x1];
+        Color c22 = pixels[y2 * MAP_WIDTH + x2];
+
+        return Color.Lerp(Color.Lerp(c11, c21, tx), Color.Lerp(c12, c22, tx), ty);
+    }
 }

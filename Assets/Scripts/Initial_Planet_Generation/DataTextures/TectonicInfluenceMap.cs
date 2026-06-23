@@ -23,6 +23,7 @@ public class TectonicInfluenceMap
     TerrainSettings settings;
 
     public Texture2D tectonicInfluence { get; private set; }
+    public Color[] influenceData { get; private set; } // Optimization #4
     public List<FaultSpline> faultSplines { get; private set; }
     public FaultSplineGrid splineGrid { get; private set; }
 
@@ -58,35 +59,60 @@ public class TectonicInfluenceMap
     Texture2D GenerateTectonicInfluence(List<(Vector3 origin, Vector3 toNeighbor, float strength)> seedCandidates)
     {
         Texture2D tex = new Texture2D(UVHelper.MAP_WIDTH, UVHelper.MAP_HEIGHT, TextureFormat.RGB24, false);
-        Color[] pixels = new Color[UVHelper.MAP_WIDTH * UVHelper.MAP_HEIGHT];
+        influenceData = new Color[UVHelper.MAP_WIDTH * UVHelper.MAP_HEIGHT];
 
         // 1.5x average spacing catches all adjacent cells without reaching distant ones.
         float neighborRadius = tectonics.averageCellSpacing * 1.5f;
 
+        // Pre-compute trigonometric values
+        float[] cosLong = new float[UVHelper.MAP_WIDTH];
+        float[] sinLong = new float[UVHelper.MAP_WIDTH];
+        for (int x = 0; x < UVHelper.MAP_WIDTH; x++)
+        {
+            float u = x / (float)(UVHelper.MAP_WIDTH - 1);
+            float longitude = (u - 0.5f) * 2f * Mathf.PI;
+            cosLong[x] = Mathf.Cos(longitude);
+            sinLong[x] = Mathf.Sin(longitude);
+        }
+
+        float[] cosLat = new float[UVHelper.MAP_HEIGHT];
+        float[] sinLat = new float[UVHelper.MAP_HEIGHT];
         for (int y = 0; y < UVHelper.MAP_HEIGHT; y++)
         {
+            float v = y / (float)(UVHelper.MAP_HEIGHT - 1);
+            float latitude = (0.5f - v) * Mathf.PI;
+            cosLat[y] = Mathf.Cos(latitude);
+            sinLat[y] = Mathf.Sin(latitude);
+        }
+
+        List<int> nearbyIndices = new List<int>();
+        for (int y = 0; y < UVHelper.MAP_HEIGHT; y++)
+        {
+            float cLat = cosLat[y];
+            float sLat = sinLat[y];
+
             for (int x = 0; x < UVHelper.MAP_WIDTH; x++)
             {
-                float u = x / (float)(UVHelper.MAP_WIDTH - 1);
-                float v = y / (float)(UVHelper.MAP_HEIGHT - 1);
-
                 float convergentStrength = 0f;
                 float divergentStrength = 0f;
 
-                Vector3 spherePoint = UVHelper.UVToSphere(u, v);
+                // Fast sphere point construction
+                Vector3 spherePoint = new Vector3(cLat * cosLong[x], sLat, cLat * sinLong[x]);
                 Vector3 warpedPoint = UVHelper.WarpSpherePoint(spherePoint, settings.warpNoise, settings.worldSeed);
 
                 int cellIdx = -1;
-                float nearestDist = float.MaxValue;
+                float nearestDistSq = float.MaxValue;
                 
-                foreach (int i in tectonics.GetNearbyCells(warpedPoint))
+                tectonics.GetNearbyCells(warpedPoint, nearbyIndices);
+
+                foreach (int i in nearbyIndices)
                 {
-                    float dist = Vector3.SqrMagnitude(warpedPoint - tectonics.cells[i].position);
+                    float distSq = Vector3.SqrMagnitude(warpedPoint - tectonics.cells[i].position);
                     
                     // Track nearest cell
-                    if (dist < nearestDist)
+                    if (distSq < nearestDistSq)
                     {
-                        nearestDist = dist;
+                        nearestDistSq = distSq;
                         cellIdx = i;
                     }
                 }
@@ -95,45 +121,41 @@ public class TectonicInfluenceMap
                 TectonicCell cell = tectonics.cells[cellIdx];
 
                 // Now evaluate neighbors in the same bucket neighborhood
-                foreach (int neighborIdx in tectonics.GetNearbyCells(warpedPoint))
+                foreach (int neighborIdx in nearbyIndices)
                 {
                     if (neighborIdx == cellIdx) continue;
                     TectonicCell neighbor = tectonics.cells[neighborIdx];
 
-                    float cellToNeighbor = Vector3.Distance(cell.position, neighbor.position);
+                    // Optimization #3: Cache square distance and only sqrt once
+                    float distSqBetweenCells = Vector3.SqrMagnitude(cell.position - neighbor.position);
+                    float cellToNeighbor = Mathf.Sqrt(distSqBetweenCells * neighborRadius);
 
                     // Vector pointing from cell toward neighbor.
-                    Vector3 toNeighbor = (neighbor.position - cell.position).normalized;
+                    Vector3 toNeighbor = (neighbor.position - cell.position) / cellToNeighbor;
 
                     // How much is each cell moving toward the other?
-                    // +1 = directly toward, -1 = directly away.
                     float cellApproach     = Vector3.Dot(cell.movementDirection, toNeighbor);
                     float neighborApproach = Vector3.Dot(neighbor.movementDirection, -toNeighbor);
 
                     // Positive = both approaching = convergent.
-                    // Negative = both retreating = divergent.
                     float boundarySignal = cellApproach + neighborApproach;
 
-                    // Scale by both movement strengths so weak plates produce weaker boundaries.
                     float boundaryStrength = Mathf.Abs(boundarySignal)
                                           * cell.movementStrength
                                           * neighbor.movementStrength;
 
-                    // How close is this pixel to the voronoi boundary between cell and neighbor?
-                    // Boundary is where distToCell == distToNeighbor. Falls off to 0 at cell centers.
-                    float distToCell     = Vector3.Distance(spherePoint, cell.position);
-                    float distToNeighbor = Vector3.Distance(spherePoint, neighbor.position);
+                    // Boundary proximity check - still needs linear distance for the specific 1D falloff math
+                    float distToCellSq     = Vector3.SqrMagnitude(spherePoint - cell.position);
+                    float distToNeighborSq = Vector3.SqrMagnitude(spherePoint - neighbor.position);
+                    float distToCell       = Mathf.Sqrt(distToCellSq);
+                    float distToNeighbor   = Mathf.Sqrt(distToNeighborSq);
+                    
                     float boundaryProximity = Mathf.Clamp01(1f - (Mathf.Abs(distToCell - distToNeighbor) / cellToNeighbor));
 
-                    // Collect seeds from pixels sitting directly on strong divergent boundaries.
-                    // boundaryProximity > 0.7 filters to the voronoi edge itself, excluding the broader halo.
-                    // toNeighbor is stored so GenerateFaultSplines can enforce spatial separation.
                     if (boundarySignal < -0.3f && boundaryStrength > 0.3f && boundaryProximity > 0.7f)
                         seedCandidates.Add((spherePoint, toNeighbor, boundaryStrength));
 
-                    // Sharpen falloff so influence concentrates at boundaries rather than spreading evenly.
                     boundaryProximity *= boundaryProximity;
-
                     float contribution = boundaryStrength * boundaryProximity;
 
                     if (boundarySignal > 0)
@@ -142,13 +164,12 @@ public class TectonicInfluenceMap
                         divergentStrength = LogarithmicCombine(divergentStrength, contribution);
                 }
 
-                // Red = convergent, Green = reserved for volcanic hotspots, Blue = divergent.
-                pixels[y * UVHelper.MAP_WIDTH + x] = new Color(convergentStrength, 0f, divergentStrength);
+                influenceData[y * UVHelper.MAP_WIDTH + x] = new Color(convergentStrength, 0f, divergentStrength);
             }
         }
 
-        pixels = BlurTexture(pixels, UVHelper.MAP_WIDTH, UVHelper.MAP_HEIGHT, 5);
-        tex.SetPixels(pixels);
+        influenceData = BlurTexture(influenceData, UVHelper.MAP_WIDTH, UVHelper.MAP_HEIGHT, 5);
+        tex.SetPixels(influenceData);
         tex.Apply();
         return tex;
     }
@@ -218,7 +239,9 @@ public class TectonicInfluenceMap
     void GenerateFaultSplines(List<(Vector3 origin, Vector3 toNeighbor, float strength)> candidates)
     {
         float minSpacing   = tectonics.averageCellSpacing * 0.5f;
+        float minSpacingSq = minSpacing * minSpacing;
         float searchRadius = tectonics.averageCellSpacing;
+        float searchRadiusSq = searchRadius * searchRadius;
 
         // Build fault point cloud from candidates, enforcing minimum spacing.
         List<Vector3> faultPoints = new List<Vector3>();
@@ -227,7 +250,7 @@ public class TectonicInfluenceMap
             bool tooClose = false;
             foreach (var existing in faultPoints)
             {
-                if (Vector3.Distance(c.origin, existing) < minSpacing)
+                if (Vector3.SqrMagnitude(c.origin - existing) < minSpacingSq)
                 { tooClose = true; break; }
             }
             if (!tooClose)
@@ -254,13 +277,13 @@ public class TectonicInfluenceMap
             {
                 Vector3 last = current[current.Count - 1];
                 int bestIdx = -1;
-                float bestDist = searchRadius;
+                float bestDistSq = searchRadiusSq;
 
                 for (int i = 0; i < faultPoints.Count; i++)
                 {
                     if (used.Contains(i)) continue;
-                    float dist = Vector3.Distance(last, faultPoints[i]);
-                    if (dist < bestDist) { bestDist = dist; bestIdx = i; }
+                    float distSq = Vector3.SqrMagnitude(last - faultPoints[i]);
+                    if (distSq < bestDistSq) { bestDistSq = distSq; bestIdx = i; }
                 }
 
                 if (bestIdx == -1) break;
@@ -292,10 +315,14 @@ public class TectonicInfluenceMap
             totalLength += Vector3.Distance(points[i - 1], points[i]);
 
         Vector2 originUV = UVHelper.SphereToUV(points[0]);
+        
+        // Optimization #4: Use raw array access instead of GetPixelBilinear
+        float strength = UVHelper.GetPixelBilinear(influenceData, originUV.x, originUV.y).b;
+
         return new FaultSpline
         {
             origin        = points[0],
-            strength      = tectonicInfluence.GetPixelBilinear(originUV.x, originUV.y).b,
+            strength      = strength,
             length        = totalLength,
             controlPoints = points.ToArray(),
             tangents      = tangents.ToArray()
