@@ -43,6 +43,10 @@ public class TerrainSettings : ScriptableObject
     [Tooltip("Mountain and ridge noise applied in boundary zones.")]
     public NoiseSettings mountainNoise;
 
+    [Header("Climate Inputs")]
+    [Tooltip("The maximum possible depth of the oceans if all water is liquid.")]
+    [Range(0.1f, 1f)] public float globalMoisture = 0.5f;
+
     [Tooltip("The degree to which mountainous terrain blocks moisture propagation")]
     [Range(1f, 2f)] public float shieldMultiplier = 1.2f;
 

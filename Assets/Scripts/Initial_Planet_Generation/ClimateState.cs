@@ -1,26 +1,28 @@
+using UnityEngine;
+
 [System.Serializable]
 public class ClimateState
 {
     
     public AtmosphericData atmosphere;
-    public float globalMoisture;
+    [System.NonSerialized] public float globalMoisture;
     public float averageTemp;
-    public float actualSeaLevel;
+    [System.NonSerialized] public float actualSeaLevel;
 
-    public ClimateState(ClimateSettings settings)
+    public ClimateState(ClimateSettings cSettings, TerrainSettings tSettings)
     {
         
         // Copy starting values from the asset — we never touch the asset again.
         atmosphere = new AtmosphericData
         {
-            nitrogen = settings.atmosphere.nitrogen,
-            carbonDioxide = settings.atmosphere.carbonDioxide,
-            methane = settings.atmosphere.methane,
-            oxygen = settings.atmosphere.oxygen,
-            traceElements = settings.atmosphere.traceElements
+            nitrogen = cSettings.atmosphere.nitrogen,
+            carbonDioxide = cSettings.atmosphere.carbonDioxide,
+            methane = cSettings.atmosphere.methane,
+            oxygen = cSettings.atmosphere.oxygen,
+            traceElements = cSettings.atmosphere.traceElements
         };
-        globalMoisture = settings.globalMoisture;
-        averageTemp = settings.averageTemp;
+        globalMoisture = tSettings.globalMoisture;
+        averageTemp = cSettings.averageTemp;
         RecalculateDerivedValues();
     }
 

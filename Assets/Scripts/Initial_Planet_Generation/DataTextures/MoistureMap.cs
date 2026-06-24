@@ -39,7 +39,7 @@ public class MoistureMap
 
     void AssignOceanMoisture(Queue<int> frontier, HashSet<int> assigned)
     {
-        float oceanThreshold = cSettings.globalMoisture * 2f - 1f;
+        float oceanThreshold = tSettings.globalMoisture * 2f - 1f;
         for (int i = 0; i < tectonics.cells.Length; i++)
         {
             if (tectonics.cells[i].baseElevation < oceanThreshold)
@@ -127,7 +127,7 @@ public class MoistureMap
                 float elevationRaw = (elevation * 4f) - 1f;
 
                 // Now compare directly against oceanThreshold in -1/1 space
-                float oceanThreshold = cSettings.globalMoisture * 2f - 1f;
+                float oceanThreshold = tSettings.globalMoisture * 2f - 1f;
 
                 Color pixelColor;
                 if (elevationRaw <= oceanThreshold)

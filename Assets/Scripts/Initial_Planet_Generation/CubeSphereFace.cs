@@ -38,12 +38,14 @@ public class CubeSphereFace
         axisA = new Vector3(localForward.y, localForward.z, localForward.x); 
         axisB = Vector3.Cross(localForward, axisA);
 
-        // Pre-allocate buffers. Max vertices: Base + Seam duplication (max 1 column)
-        // A column is 'resolution' vertices.
+        // Pre-allocate buffers. Max vertices: Base + Seam duplication (max 2 edges/columns)
+        // A column is 'resolution' vertices. In extreme cases (seam on corner), 
+        // we might need more, so we'll allocate base + resolution * 2 + 64.
         int baseVertexCount = resolution * resolution;
-        vertices = new Vector3[baseVertexCount + resolution + 10]; 
+        vertices = new Vector3[baseVertexCount + resolution * 2 + 64]; 
         uvs = new Vector2[vertices.Length];
         triangles = new int[(resolution - 1) * (resolution - 1) * 6];
+        duplicateCache = new Dictionary<int, int>();
     }
 
     public void ConstructMesh()

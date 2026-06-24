@@ -92,18 +92,16 @@ public class PlanetGenerator : MonoBehaviour
 
     public void OnShapeSettingsUpdated()
     {
-        if (autoUpdate)
-        {
-            GenerateMesh();
-        }
+        // Auto-update is purposefully disabled for Terrain Settings to maintain performance.
+        // Changing tectonics or landmasses is a heavy operation that requires a manual 'Generate Planet' click.
     }
 
     public void OnColorSettingsUpdated()
     {
         // 1. Refresh the runtime state from the settings asset
-        if (climateSettings != null)
+        if (climateSettings != null && terrainSettings != null)
         {
-            runtimeClimate = new ClimateState(climateSettings);
+            runtimeClimate = new ClimateState(climateSettings, terrainSettings);
         }
         
         if (autoUpdate)
@@ -122,8 +120,8 @@ public class PlanetGenerator : MonoBehaviour
     
     void GenerateColors()
     {
-        if (runtimeClimate == null && climateSettings != null)
-            runtimeClimate = new ClimateState(climateSettings);
+        if (runtimeClimate == null && climateSettings != null && terrainSettings != null)
+            runtimeClimate = new ClimateState(climateSettings, terrainSettings);
 
         if (runtimeClimate == null) return;
 
