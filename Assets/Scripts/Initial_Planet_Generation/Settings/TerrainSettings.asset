@@ -23,5 +23,5 @@ MonoBehaviour:
   warpNoise: {fileID: 11400000, guid: 584cc43926235dc45abe2187b4986880, type: 2}
   terrainNoise: {fileID: 11400000, guid: d0de34f73118726409eead1bc9237292, type: 2}
   mountainNoise: {fileID: 11400000, guid: fa024efa456e99f4e8e154496f787a62, type: 2}
-  globalMoisture: 0.519
+  globalMoisture: 0.7
   shieldMultiplier: 1.2

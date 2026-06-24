@@ -419,4 +419,31 @@ public class GenerateTectonics
     }
 
     const float neighborRadius = 0.4f;
+
+    // --- Job Support ---
+    public void GetJobData(out Unity.Collections.NativeArray<TectonicCell> cellArray, out Unity.Collections.NativeArray<int> bucketOffsets, out Unity.Collections.NativeArray<int> bucketIndices)
+    {
+        cellArray = new Unity.Collections.NativeArray<TectonicCell>(cells, Unity.Collections.Allocator.TempJob);
+        bucketOffsets = new Unity.Collections.NativeArray<int>(BUCKET_SIZE * BUCKET_SIZE, Unity.Collections.Allocator.TempJob);
+        
+        int totalIndices = 0;
+        for (int y = 0; y < BUCKET_SIZE; y++)
+            for (int x = 0; x < BUCKET_SIZE; x++)
+                totalIndices += buckets[x, y].Count;
+
+        bucketIndices = new Unity.Collections.NativeArray<int>(totalIndices, Unity.Collections.Allocator.TempJob);
+
+        int currentIdx = 0;
+        for (int y = 0; y < BUCKET_SIZE; y++)
+        {
+            for (int x = 0; x < BUCKET_SIZE; x++)
+            {
+                bucketOffsets[y * BUCKET_SIZE + x] = currentIdx;
+                foreach (int cellIdx in buckets[x, y])
+                {
+                    bucketIndices[currentIdx++] = cellIdx;
+                }
+            }
+        }
+    }
 }

@@ -112,12 +112,34 @@ public class PlanetGenerator : MonoBehaviour
 
     void GenerateMesh()
     {
-        foreach (CubeSphereFace face in terrainFaces)
+        int vertexCount = resolution * resolution;
+        var faceVertices = new Unity.Collections.NativeArray<Vector3>[6];
+        var faceUVs = new Unity.Collections.NativeArray<Vector2>[6];
+        var handles = new Unity.Jobs.JobHandle[6];
+
+        for (int i = 0; i < 6; i++)
         {
-            face.ConstructMesh();
+            faceVertices[i] = new Unity.Collections.NativeArray<Vector3>(vertexCount, Unity.Collections.Allocator.TempJob);
+            faceUVs[i] = new Unity.Collections.NativeArray<Vector2>(vertexCount, Unity.Collections.Allocator.TempJob);
+            handles[i] = terrainFaces[i].ScheduleMeshJob(faceVertices[i], faceUVs[i]);
+        }
+
+        Unity.Jobs.JobHandle.CompleteAll(new Unity.Collections.NativeArray<Unity.Jobs.JobHandle>(handles, Unity.Collections.Allocator.Temp));
+
+        for (int i = 0; i < 6; i++)
+        {
+            Vector3[] vArr = new Vector3[vertexCount];
+            Vector2[] uArr = new Vector2[vertexCount];
+            faceVertices[i].CopyTo(vArr);
+            faceUVs[i].CopyTo(uArr);
+            
+            terrainFaces[i].ConstructMesh(vArr, uArr);
+
+            faceVertices[i].Dispose();
+            faceUVs[i].Dispose();
         }
     }
-    
+
     void GenerateColors()
     {
         if (runtimeClimate == null && climateSettings != null && terrainSettings != null)

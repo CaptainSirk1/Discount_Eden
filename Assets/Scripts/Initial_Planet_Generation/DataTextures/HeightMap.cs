@@ -1,5 +1,8 @@
 using UnityEngine;
 using System.Collections.Generic;
+using Unity.Collections;
+using Unity.Jobs;
+using PlanetGeneration;
 
 public class HeightMap
 {
@@ -8,7 +11,7 @@ public class HeightMap
     TectonicInfluenceMap influence;
     
     public Texture2D height {get; private set;}
-    public Color[] heightData {get; private set;} // Optimization #4
+    public Color[] heightData {get; private set;} 
 
     public HeightMap(GenerateTectonics tectonics, TerrainSettings settings, TectonicInfluenceMap influence)
     {
@@ -18,99 +21,57 @@ public class HeightMap
     }
     public void Generate()
     {
-        height = GenerateHeight();
-    }
+        int width = UVHelper.MAP_WIDTH;
+        int height = UVHelper.MAP_HEIGHT;
+        int totalPixels = width * height;
 
-    Texture2D GenerateHeight()
-    {
-        Texture2D tex = new Texture2D(UVHelper.MAP_WIDTH, UVHelper.MAP_HEIGHT, TextureFormat.RGB24, false);
-        heightData = new Color[UVHelper.MAP_WIDTH * UVHelper.MAP_HEIGHT];
+        NativeArray<Color32> hData = new NativeArray<Color32>(totalPixels, Allocator.TempJob);
+        NativeArray<Color32> iData = new NativeArray<Color32>(totalPixels, Allocator.TempJob);
+        
+        // Convert influence data to Color32
+        Color32[] infl32 = new Color32[totalPixels];
+        for(int i=0; i<totalPixels; i++) infl32[i] = influence.influenceData[i];
+        iData.CopyFrom(infl32);
 
-        // Pre-compute trigonometric values
-        float[] cosLong = new float[UVHelper.MAP_WIDTH];
-        float[] sinLong = new float[UVHelper.MAP_WIDTH];
-        for (int x = 0; x < UVHelper.MAP_WIDTH; x++)
+        tectonics.GetJobData(out NativeArray<TectonicCell> cells, out NativeArray<int> offsets, out NativeArray<int> indices);
+        influence.GetJobData(out NativeArray<Vector3> fPoints, out NativeArray<float> fStrengths);
+
+        var job = new HeightMapJob
         {
-            float u = x / (float)(UVHelper.MAP_WIDTH - 1);
-            float longitude = (u - 0.5f) * 2f * Mathf.PI;
-            cosLong[x] = Mathf.Cos(longitude);
-            sinLong[x] = Mathf.Sin(longitude);
-        }
+            width = width,
+            height = height,
+            worldSeed = settings.worldSeed,
+            warpNoise = NoiseData.FromSettings(settings.warpNoise, settings.worldSeed),
+            terrainNoise = NoiseData.FromSettings(settings.terrainNoise, settings.worldSeed),
+            mountainNoise = NoiseData.FromSettings(settings.mountainNoise, settings.worldSeed),
+            cells = cells,
+            bucketOffsets = offsets,
+            bucketIndices = indices,
+            bucketSize = 8,
+            influenceData = iData,
+            faultPoints = fPoints.Reinterpret<Unity.Mathematics.float3>(),
+            faultStrengths = fStrengths,
+            heightData = hData
+        };
 
-        float[] cosLat = new float[UVHelper.MAP_HEIGHT];
-        float[] sinLat = new float[UVHelper.MAP_HEIGHT];
-        for (int y = 0; y < UVHelper.MAP_HEIGHT; y++)
-        {
-            float v = y / (float)(UVHelper.MAP_HEIGHT - 1);
-            float latitude = (0.5f - v) * Mathf.PI;
-            cosLat[y] = Mathf.Cos(latitude);
-            sinLat[y] = Mathf.Sin(latitude);
-        }
+        JobHandle handle = job.Schedule(totalPixels, 64);
+        handle.Complete();
 
-        List<int> nearbyScratchpad = new List<int>();
+        this.height = new Texture2D(width, height, TextureFormat.RGB24, false);
+        heightData = new Color[totalPixels];
+        Color32[] h32 = new Color32[totalPixels];
+        hData.CopyTo(h32);
+        for (int i = 0; i < totalPixels; i++) heightData[i] = h32[i];
 
-        for (int y = 0; y < UVHelper.MAP_HEIGHT; y++)
-        {
-            float cLat = cosLat[y];
-            float sLat = sinLat[y];
+        this.height.SetPixels32(h32);
+        this.height.Apply();
 
-            for (int x = 0; x < UVHelper.MAP_WIDTH; x++)
-            {
-                float faultDepression = 0;
-
-                // Guard — if no mountain noise is assigned, skip noise sampling entirely
-                bool hasMountainNoise = settings.mountainNoise != null;
-                bool hasTerrainNoise = settings.terrainNoise != null;
-
-                // Fast sphere point construction
-                Vector3 spherePoint = new Vector3(cLat * cosLong[x], sLat, cLat * sinLong[x]);
-                Vector3 warpedPoint = UVHelper.WarpSpherePoint(spherePoint, settings.warpNoise, settings.worldSeed);
-
-                // Configure Depth and Radius to determine how wide and deep divergent fault lines run.
-                float faultRadius = 0.04f;
-                float faultDepth = 0.2f;
-                if (influence.splineGrid.GetNearestPoint(spherePoint, out _, out float faultStrength, out float dSq))
-                {
-                    float dist = Mathf.Sqrt(dSq);
-                    float falloff = Mathf.Clamp01(1f - dist / faultRadius);
-                    falloff *= falloff;
-                    faultDepression = falloff * faultStrength * faultDepth;
-                }
-
-                float elevation = tectonics.GetBlendedElevation(warpedPoint, nearbyScratchpad);
-                float baseColor = (elevation + 1f) / 4f;
-
-                float terrainColor = 0f;
-                if (hasTerrainNoise)
-                {
-                    float terrainNoise = settings.terrainNoise.Sample(spherePoint, settings.worldSeed);
-                    terrainColor = terrainNoise * 0.1f;
-                }
-
-                float mountainColor = 0f;
-                if (hasMountainNoise)
-                {
-                    // Optimization #4: Use raw array access instead of GetPixelBilinear
-                    Color influenceValue = influence.influenceData[y * UVHelper.MAP_WIDTH + x];
-                    float convergent = influenceValue.r;
-                    float divergent = influenceValue.b;
-
-                    // Scale noise opacity by influence channel values
-                    float noiseOpacity = 0.05f
-                                    + convergent * 0.95f   // up to 1.0 in convergent zones
-                                    + divergent * 0.25f;   // up to 0.3 in divergent zones
-
-                    float mountainNoise = settings.mountainNoise.Sample(spherePoint, settings.worldSeed);
-                    mountainColor = mountainNoise * noiseOpacity;
-                }
-
-                float finalColor = Mathf.Clamp01(baseColor + terrainColor + mountainColor - faultDepression);
-
-                heightData[y * UVHelper.MAP_WIDTH + x] = new Color(finalColor, finalColor, finalColor);   
-            }
-        }
-        tex.SetPixels(heightData);
-        tex.Apply();
-        return tex;
+        hData.Dispose();
+        iData.Dispose();
+        cells.Dispose();
+        offsets.Dispose();
+        indices.Dispose();
+        fPoints.Dispose();
+        fStrengths.Dispose();
     }
 }

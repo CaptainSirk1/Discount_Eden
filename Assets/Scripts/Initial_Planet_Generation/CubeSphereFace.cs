@@ -1,5 +1,8 @@
 using UnityEngine;
 using System.Collections.Generic;
+using Unity.Collections;
+using Unity.Jobs;
+using PlanetGeneration;
 
 // The initial planet mesh will essentially be a cube consisting of 6 faces
 // The vertices making up each face will be 'normalized,' or shifted to an equal distance from the center of the cube
@@ -15,14 +18,10 @@ public class CubeSphereFace
     TerrainShapeGenerator shapeGen;
     Mesh mesh;
     
-    // localForward will be SomeVector[x, y, z]: X covers the global left/right axis, Y covers up/down, and Z covers forward/back.
-    // If your standing in "front" of the final cube sphere, the localForward of right side face of the sphere would be [1, 0, 0]
-    // The face on the left side of the sphere would be [-1, 0, 0], indicating that the global left is the local forward for that face.
     Vector3 localForward;
     Vector3 axisA;
     Vector3 axisB;
 
-    // Optimization #5: Pre-allocated arrays to avoid GC pressure
     Vector3[] vertices;
     Vector2[] uvs;
     int[] triangles;
@@ -38,9 +37,6 @@ public class CubeSphereFace
         axisA = new Vector3(localForward.y, localForward.z, localForward.x); 
         axisB = Vector3.Cross(localForward, axisA);
 
-        // Pre-allocate buffers. Max vertices: Base + Seam duplication (max 2 edges/columns)
-        // A column is 'resolution' vertices. In extreme cases (seam on corner), 
-        // we might need more, so we'll allocate base + resolution * 2 + 64.
         int baseVertexCount = resolution * resolution;
         vertices = new Vector3[baseVertexCount + resolution * 2 + 64]; 
         uvs = new Vector2[vertices.Length];
@@ -48,25 +44,46 @@ public class CubeSphereFace
         duplicateCache = new Dictionary<int, int>();
     }
 
-    public void ConstructMesh()
+    public JobHandle ScheduleMeshJob(NativeArray<Vector3> jobVertices, NativeArray<Vector2> jobUVs)
+    {
+        var job = new ConstructMeshJob
+        {
+            resolution = resolution,
+            localForward = localForward,
+            axisA = axisA,
+            axisB = axisB,
+            planetRadius = shapeGen.settings.planetRadius,
+            vertices = jobVertices.Reinterpret<Unity.Mathematics.float3>(),
+            uvs = jobUVs.Reinterpret<Unity.Mathematics.float2>()
+        };
+
+        return job.Schedule(resolution * resolution, 64);
+    }
+
+    public void ConstructMesh(Vector3[] computedVertices = null, Vector2[] computedUVs = null)
     {
         int vertexCount = resolution * resolution;
         duplicateCache.Clear();
 
-        // Optimization #6: Single normalization pass
-        for (int y = 0; y < resolution; y++)
+        if (computedVertices != null && computedUVs != null)
         {
-            for (int x = 0; x < resolution; x++)
+            System.Array.Copy(computedVertices, vertices, vertexCount);
+            System.Array.Copy(computedUVs, uvs, vertexCount);
+        }
+        else
+        {
+            // Fallback for non-jobified calls
+            for (int y = 0; y < resolution; y++)
             {
-                int i = x + y * resolution;
-                Vector2 percent = new Vector2(x, y) / (resolution - 1);
-                Vector3 pointOnUnitCube = localForward + (percent.x - 0.5f) * 2 * axisA + (percent.y - 0.5f) * 2 * axisB;
-                
-                Vector3 normalizedPoint = pointOnUnitCube.normalized;
-
-                // Optimization #6: Inline simple radius calculation
-                vertices[i] = normalizedPoint * shapeGen.settings.planetRadius;
-                uvs[i] = UVHelper.SphereToUV(normalizedPoint);
+                for (int x = 0; x < resolution; x++)
+                {
+                    int i = x + y * resolution;
+                    Vector2 percent = new Vector2(x, y) / (resolution - 1);
+                    Vector3 pointOnUnitCube = localForward + (percent.x - 0.5f) * 2 * axisA + (percent.y - 0.5f) * 2 * axisB;
+                    Vector3 normalizedPoint = pointOnUnitCube.normalized;
+                    vertices[i] = normalizedPoint * shapeGen.settings.planetRadius;
+                    uvs[i] = UVHelper.SphereToUV(normalizedPoint);
+                }
             }
         }
 
@@ -84,20 +101,18 @@ public class CubeSphereFace
                 int iC = i + resolution;
                 int iD = i + 1;
 
-                // Process first triangle (A, B, C)
                 ProcessTriangle(iA, iB, iC, ref currentVertexCount, ref triIndex);
-                // Process second triangle (A, D, B)
                 ProcessTriangle(iA, iD, iB, ref currentVertexCount, ref triIndex);
             }
         }
 
         mesh.Clear();
-        // Optimization #5: Use SetVertices/SetTriangles with counts to avoid ToArray()
         mesh.SetVertices(vertices, 0, currentVertexCount);
         mesh.SetUVs(0, uvs, 0, currentVertexCount);
         mesh.SetTriangles(triangles, 0, triIndex, 0);
         mesh.RecalculateNormals();
     }
+
 
     void ProcessTriangle(int a, int b, int c, ref int currentCount, ref int triIdx)
     {

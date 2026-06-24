@@ -230,6 +230,28 @@ public class TectonicInfluenceMap
         return result;
     }
 
+    // --- Job Support ---
+    public void GetJobData(out Unity.Collections.NativeArray<Vector3> points, out Unity.Collections.NativeArray<float> strengths)
+    {
+        List<Vector3> pList = new List<Vector3>();
+        List<float> sList = new List<float>();
+
+        if (faultSplines != null)
+        {
+            foreach (var spline in faultSplines)
+            {
+                foreach (var cp in spline.controlPoints)
+                {
+                    pList.Add(cp);
+                    sList.Add(spline.strength);
+                }
+            }
+        }
+
+        points = new Unity.Collections.NativeArray<Vector3>(pList.ToArray(), Unity.Collections.Allocator.TempJob);
+        strengths = new Unity.Collections.NativeArray<float>(sList.ToArray(), Unity.Collections.Allocator.TempJob);
+    }
+
     // --- Fault Splines ---
 
     // Builds a point cloud from divergent boundary candidates with minimum spacing enforced,
