@@ -108,7 +108,15 @@ public class GenerateTectonics
         }
 
         for (int i = 0; i < settings.continentCenters; i++)
-            cells[indices[i]].isContinentCenter = 1;
+        {
+            int idx = indices[i];
+            cells[idx].isContinentCenter = 1;
+            
+            if (i < settings.continentCenters / 2)
+                cells[idx].baseElevation = (float)(rng.NextDouble() * 0.5f + 0.5f);  // 0.5 to 1
+            else
+                cells[idx].baseElevation = (float)(rng.NextDouble() * -0.5f - 0.5f); // -1 to -0.5
+        }
     }
 
     void AssignContinentCenterData()
@@ -117,7 +125,6 @@ public class GenerateTectonics
         {
             if (cells[i].isContinentCenter == 0) continue;
 
-            cells[i].baseElevation = (float)(rng.NextDouble() * 2 - 1);
             cells[i].movementDirection = RandomTangent(cells[i].position);
             cells[i].movementStrength = Mathf.Lerp(
                 (float)rng.NextDouble(), 1f, settings.strengthMultiplier);
@@ -179,7 +186,7 @@ public class GenerateTectonics
         cells[cellIndex].movementStrength = Mathf.Clamp01(
             cells[neighborIndex].movementStrength + strengthVariation);
 
-        float angleVariation = (float)(rng.NextDouble() * 2 - 1) * 30f * (1f - settings.elevationCoherence);
+        float angleVariation = (float)(rng.NextDouble() * 2 - 1) * 15f * (1f - settings.directionCoherence);
         cells[cellIndex].movementDirection = Quaternion.AngleAxis(angleVariation, cells[cellIndex].position)
                                         * cells[neighborIndex].movementDirection;
     }

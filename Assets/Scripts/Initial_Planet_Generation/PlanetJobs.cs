@@ -182,6 +182,7 @@ namespace PlanetGeneration
         public int width;
         public int height;
         public int worldSeed;
+        public float trenchDepthMultiplier;
         public NoiseData warpNoise;
         public NoiseData terrainNoise;
         public NoiseData mountainNoise;
@@ -193,10 +194,6 @@ namespace PlanetGeneration
         public int bucketSize;
 
         [ReadOnly] public NativeArray<Color32> influenceData;
-        
-        // Fault spline data simplified for job
-        [ReadOnly] public NativeArray<float3> faultPoints;
-        [ReadOnly] public NativeArray<float> faultStrengths;
 
         [WriteOnly] public NativeArray<Color32> heightData;
 
@@ -224,31 +221,6 @@ namespace PlanetGeneration
                 warpedPoint = math.normalize(spherePoint + offset);
             }
 
-            // Fault depression
-            float faultDepression = 0;
-            float faultRadius = 0.04f;
-            float faultDepth = 0.2f;
-
-            // Simplified fault point search
-            float minDSq = float.MaxValue;
-            float fStrength = 0;
-            for(int j = 0; j < faultPoints.Length; j++)
-            {
-                float dSq = math.distancesq(spherePoint, faultPoints[j]);
-                if (dSq < minDSq)
-                {
-                    minDSq = dSq;
-                    fStrength = faultStrengths[j];
-                }
-            }
-            if (minDSq < faultRadius * faultRadius)
-            {
-                float dist = math.sqrt(minDSq);
-                float falloff = math.clamp(1f - dist / faultRadius, 0f, 1f);
-                falloff *= falloff;
-                faultDepression = falloff * fStrength * faultDepth;
-            }
-
             // Blended elevation
             float elevation = GetBlendedElevation(warpedPoint);
             float baseColor = (elevation + 1f) / 4f;
@@ -259,12 +231,16 @@ namespace PlanetGeneration
 
             Color32 infl = influenceData[i];
             float convergent = infl.r / 255f;
+            float subduction = infl.g / 255f;
             float divergent = infl.b / 255f;
 
             float noiseOpacity = 0.05f + convergent * 0.95f + divergent * 0.25f;
             float mountainColor = mountainNoise.Sample(spherePoint) * noiseOpacity;
 
-            float finalColor = math.clamp(baseColor + terrainColor + mountainColor - faultDepression, 0f, 1f);
+            float trenchDepth = subduction * subduction * trenchDepthMultiplier; // squared for sharper edges
+            float ridgeHeight = divergent * 0.3f;
+
+            float finalColor = math.clamp(baseColor + terrainColor + mountainColor + ridgeHeight - trenchDepth, 0f, 1f);
             byte b = (byte)(finalColor * 255);
             heightData[i] = new Color32(b, b, b, 255);
         }
@@ -281,7 +257,7 @@ namespace PlanetGeneration
             float totalWeight = 0f;
             float weightedElevation = 0f;
             float averageCellSpacing = math.sqrt(4f * math.PI / cells.Length);
-            float blendRadiusSq = (averageCellSpacing * 2f) * (averageCellSpacing * 2f);
+            float blendRadiusSq = averageCellSpacing * 2f * (averageCellSpacing * 2f);
 
             for (int dy = -1; dy <= 1; dy++)
             {

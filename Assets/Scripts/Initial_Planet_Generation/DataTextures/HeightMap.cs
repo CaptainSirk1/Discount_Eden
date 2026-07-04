@@ -1,5 +1,4 @@
 using UnityEngine;
-using System.Collections.Generic;
 using Unity.Collections;
 using Unity.Jobs;
 using PlanetGeneration;
@@ -41,6 +40,7 @@ public class HeightMap
             width = width,
             height = height,
             worldSeed = settings.worldSeed,
+            trenchDepthMultiplier = settings.trenchDepthMultiplier,
             warpNoise = NoiseData.FromSettings(settings.warpNoise, settings.worldSeed),
             terrainNoise = NoiseData.FromSettings(settings.terrainNoise, settings.worldSeed),
             mountainNoise = NoiseData.FromSettings(settings.mountainNoise, settings.worldSeed),
@@ -49,8 +49,6 @@ public class HeightMap
             bucketIndices = indices,
             bucketSize = 8,
             influenceData = iData,
-            faultPoints = fPoints.Reinterpret<Unity.Mathematics.float3>(),
-            faultStrengths = fStrengths,
             heightData = hData
         };
 

@@ -7,13 +7,6 @@ using System.Collections.Generic;
 //   tectonicInfluence — 512x256 RGB texture. Red = convergent boundary strength (mountains),
 //                       Blue = divergent boundary strength (rifts). Green reserved for volcanic hotspots.
 //                       Persists across all LODs as a blueprint for noise application and strength scaling.
-//
-//   faultSplines      — Fault lines traced along divergent boundaries using a point-cloud nearest-neighbor walk.
-//                       Sparse control points are refined and noise-displaced before storage.
-//                       Higher LODs read these to generate rift valley geometry and seed perpendicular ridges.
-//
-//   splineGrid        — Spatial index over faultSplines for cheap proximity queries.
-//                       HeightMap and higher LOD systems query this instead of iterating faultSplines directly.
 
 // HeightMap samples tectonicInfluence via GetPixelBilinear for convergent and divergent channel values.
 // HeightMap queries splineGrid.GetNearestPoint() for distance/strength to apply fault depression falloff.
@@ -24,8 +17,6 @@ public class TectonicInfluenceMap
 
     public Texture2D tectonicInfluence { get; private set; }
     public Color[] influenceData { get; private set; } // Optimization #4
-    public List<FaultSpline> faultSplines { get; private set; }
-    public FaultSplineGrid splineGrid { get; private set; }
 
     public TectonicInfluenceMap(GenerateTectonics tectonics, TerrainSettings settings)
     {
@@ -37,16 +28,9 @@ public class TectonicInfluenceMap
 
     public void Generate()
     {
-        faultSplines = new List<FaultSpline>();
         var seedCandidates = new List<(Vector3 origin, Vector3 toNeighbor, float strength)>();
 
-        tectonicInfluence = GenerateTectonicInfluence(seedCandidates);
-        GenerateFaultSplines(seedCandidates);
-
-        foreach (FaultSpline spline in faultSplines)
-            spline.Refine(Mathf.Max(8, Mathf.RoundToInt(spline.length * 200f)), settings.worldSeed);
-
-        splineGrid = new FaultSplineGrid(faultSplines);
+        tectonicInfluence = GenerateTectonicInfluence();
     }
 
     // --- Influence Map ---
@@ -56,7 +40,7 @@ public class TectonicInfluenceMap
     // are written to the red and blue channels respectively.
     // Pixels sitting directly on strong divergent boundaries are collected as fault spline seed candidates,
     // storing toNeighbor so splines know which direction runs along the boundary.
-    Texture2D GenerateTectonicInfluence(List<(Vector3 origin, Vector3 toNeighbor, float strength)> seedCandidates)
+    Texture2D GenerateTectonicInfluence()
     {
         Texture2D tex = new Texture2D(UVHelper.MAP_WIDTH, UVHelper.MAP_HEIGHT, TextureFormat.RGB24, false);
         influenceData = new Color[UVHelper.MAP_WIDTH * UVHelper.MAP_HEIGHT];
@@ -93,7 +77,8 @@ public class TectonicInfluenceMap
 
             for (int x = 0; x < UVHelper.MAP_WIDTH; x++)
             {
-                float convergentStrength = 0f;
+                float convergentStrengthR = 0f;
+                float convergentStrengthG = 0f;
                 float divergentStrength = 0f;
 
                 // Fast sphere point construction
@@ -154,25 +139,57 @@ public class TectonicInfluenceMap
                     float distToCell       = Mathf.Sqrt(distToCellSq);
                     float distToNeighbor   = Mathf.Sqrt(distToNeighborSq);
                     
-                    float boundaryProximity = Mathf.Clamp01(1f - (Mathf.Abs(distToCell - distToNeighbor) / cellToNeighbor));
+                    float boundaryProximityRaw = Mathf.Clamp01(1f - (Mathf.Abs(distToCell - distToNeighbor) / cellToNeighbor));
+                    float boundaryProximity = boundaryProximityRaw * boundaryProximityRaw;
 
-                    if (boundarySignal < -0.3f && boundaryStrength > 0.3f && boundaryProximity > 0.7f)
-                        seedCandidates.Add((spherePoint, toNeighbor, boundaryStrength));
-
-                    boundaryProximity *= boundaryProximity;
                     float contribution = boundaryStrength * boundaryProximity;
 
                     if (boundarySignal > 0)
-                        convergentStrength = LogarithmicCombine(convergentStrength, contribution);
+                    {
+                        float elevationDiff = Mathf.Abs(cell.baseElevation - neighbor.baseElevation);
+                        if(elevationDiff >= settings.subductionThreshold)
+                        {
+                            // How far beyond the threshold, normalized to 0-1
+                            float excess = Mathf.Clamp01(
+                                (elevationDiff - settings.subductionThreshold) / (1f - settings.subductionThreshold));
+                            
+                            // Logarithmic decay — drops off quickly at first, then levels out
+                            float decayMultiplier = 1f - settings.subductionDecay * 
+                                (Mathf.Log(1f + excess * 9f) / Mathf.Log(10f));
+                            
+                            contribution *= decayMultiplier;
+
+                            if(cell.baseElevation >= neighbor.baseElevation)
+                                convergentStrengthR = LogarithmicCombine(convergentStrengthR, contribution);
+                            if(cell.baseElevation < neighbor.baseElevation && boundaryProximityRaw > settings.subductionProximityThreshold)
+                                convergentStrengthG = LogarithmicCombine(convergentStrengthG, contribution);
+                        }
+                        if(elevationDiff < settings.subductionThreshold)
+                            convergentStrengthR = LogarithmicCombine(convergentStrengthR, contribution);
+                    }
                     else if (boundarySignal < 0)
                         divergentStrength = LogarithmicCombine(divergentStrength, contribution);
                 }
 
-                influenceData[y * UVHelper.MAP_WIDTH + x] = new Color(convergentStrength, 0f, divergentStrength);
+                influenceData[y * UVHelper.MAP_WIDTH + x] = new Color(convergentStrengthR, convergentStrengthG, divergentStrength);
             }
         }
 
-        influenceData = BlurTexture(influenceData, UVHelper.MAP_WIDTH, UVHelper.MAP_HEIGHT, 5);
+        Color[] redBlue = new Color[influenceData.Length];
+        Color[] greenOnly = new Color[influenceData.Length];
+
+        for (int i = 0; i < influenceData.Length; i++)
+        {
+            redBlue[i] = new Color(influenceData[i].r, 0f, influenceData[i].b);
+            greenOnly[i] = new Color(0f, influenceData[i].g, 0f);
+        }
+
+        redBlue = BlurTexture(redBlue, UVHelper.MAP_WIDTH, UVHelper.MAP_HEIGHT, 5);
+        greenOnly = BlurTexture(greenOnly, UVHelper.MAP_WIDTH, UVHelper.MAP_HEIGHT, 1);
+
+        for (int i = 0; i < influenceData.Length; i++)
+            influenceData[i] = new Color(redBlue[i].r, greenOnly[i].g, redBlue[i].b);
+
         tex.SetPixels(influenceData);
         tex.Apply();
         return tex;
@@ -240,118 +257,8 @@ public class TectonicInfluenceMap
         List<Vector3> pList = new List<Vector3>();
         List<float> sList = new List<float>();
 
-        if (faultSplines != null)
-        {
-            foreach (var spline in faultSplines)
-            {
-                foreach (var cp in spline.controlPoints)
-                {
-                    pList.Add(cp);
-                    sList.Add(spline.strength);
-                }
-            }
-        }
 
         points = new Unity.Collections.NativeArray<Vector3>(pList.ToArray(), Unity.Collections.Allocator.TempJob);
         strengths = new Unity.Collections.NativeArray<float>(sList.ToArray(), Unity.Collections.Allocator.TempJob);
-    }
-
-    // --- Fault Splines ---
-
-    // Builds a point cloud from divergent boundary candidates with minimum spacing enforced,
-    // then connects points into splines using a nearest-neighbor walk.
-    // A new spline starts whenever no unused point is found within searchRadius,
-    // naturally terminating at boundary edges and gaps.
-    void GenerateFaultSplines(List<(Vector3 origin, Vector3 toNeighbor, float strength)> candidates)
-    {
-        float minSpacing   = tectonics.averageCellSpacing * 0.5f;
-        float minSpacingSq = minSpacing * minSpacing;
-        float searchRadius = tectonics.averageCellSpacing;
-        float searchRadiusSq = searchRadius * searchRadius;
-
-        // Build fault point cloud from candidates, enforcing minimum spacing.
-        List<Vector3> faultPoints = new List<Vector3>();
-        foreach (var c in candidates)
-        {
-            bool tooClose = false;
-            foreach (var existing in faultPoints)
-            {
-                if (Vector3.SqrMagnitude(c.origin - existing) < minSpacingSq)
-                { tooClose = true; break; }
-            }
-            if (!tooClose)
-                faultPoints.Add(c.origin);
-        }
-
-        // Nearest-neighbor walk — always connect to the closest unused point within searchRadius.
-        // Produces splines that follow boundary curvature rather than scan-order artifacts.
-        HashSet<int> used = new HashSet<int>();
-
-        while (true)
-        {
-            // Find the next unused starting point.
-            int startIdx = -1;
-            for (int i = 0; i < faultPoints.Count; i++)
-                if (!used.Contains(i)) { startIdx = i; break; }
-            if (startIdx == -1) break;
-
-            List<Vector3> current = new List<Vector3>();
-            current.Add(faultPoints[startIdx]);
-            used.Add(startIdx);
-
-            while (true)
-            {
-                Vector3 last = current[current.Count - 1];
-                int bestIdx = -1;
-                float bestDistSq = searchRadiusSq;
-
-                for (int i = 0; i < faultPoints.Count; i++)
-                {
-                    if (used.Contains(i)) continue;
-                    float distSq = Vector3.SqrMagnitude(last - faultPoints[i]);
-                    if (distSq < bestDistSq) { bestDistSq = distSq; bestIdx = i; }
-                }
-
-                if (bestIdx == -1) break;
-                used.Add(bestIdx);
-                current.Add(faultPoints[bestIdx]);
-            }
-
-            if (current.Count >= 2)
-                faultSplines.Add(BuildSpline(current));
-        }
-    }
-
-    // Assembles a point list into a FaultSpline, computing tangents and total length.
-    // Applies a smoothing pass before computing tangents to reduce jaggedness
-    // from the nearest-neighbor walk on a discrete point cloud.
-    FaultSpline BuildSpline(List<Vector3> points)
-    {
-        // Smooth points by averaging each with its neighbors.
-        for (int i = 1; i < points.Count - 1; i++)
-            points[i] = ((points[i - 1] + points[i] + points[i + 1]) / 3f).normalized;
-
-        List<Vector3> tangents = new List<Vector3>();
-        for (int i = 0; i < points.Count - 1; i++)
-            tangents.Add((points[i + 1] - points[i]).normalized);
-        tangents.Add(tangents[tangents.Count - 1]);
-
-        float totalLength = 0f;
-        for (int i = 1; i < points.Count; i++)
-            totalLength += Vector3.Distance(points[i - 1], points[i]);
-
-        Vector2 originUV = UVHelper.SphereToUV(points[0]);
-        
-        // Optimization #4: Use raw array access instead of GetPixelBilinear
-        float strength = UVHelper.GetPixelBilinear(influenceData, originUV.x, originUV.y).b;
-
-        return new FaultSpline
-        {
-            origin        = points[0],
-            strength      = strength,
-            length        = totalLength,
-            controlPoints = points.ToArray(),
-            tangents      = tangents.ToArray()
-        };
     }
 }

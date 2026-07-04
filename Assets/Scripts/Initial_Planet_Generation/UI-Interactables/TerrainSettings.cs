@@ -29,9 +29,29 @@ public class TerrainSettings : ScriptableObject
     [Tooltip("Determines the strength of noise used to break up inorganic voronoi divisions")]
     [Range(0f, 1f)] public float continentEdgeNoise = 0.8f;
 
-    [Tooltip("Determines how likely neighboring cells are to share a similar elevation")]
+    [Tooltip("Determines how likely neighboring cells are to share a similar elevation. Decrease for  more random elevation changes.")]
     [Range(0.1f, 0.9f)]
     public float elevationCoherence = 0.9f;
+
+    [Tooltip("Determines how much the movement angle of neighboring cells can vary by. Decrease for less coherent tectonic shapes.")]
+    [Range(0.1f, 0.99f)] 
+    public float directionCoherence = 0.95f;
+
+    [Tooltip("The elevation variance which triggers subduction logic at convergent boundaries")]
+    [Range(0f, 1f)]
+    public float subductionThreshold = 0.4f;
+
+    [Tooltip("The degree to which convergent mountain noise is softened in subduction zones")]
+    [Range(0f, 1f)]
+    public float subductionDecay = 0.3f;
+
+    [Tooltip("The distance from which subduction zones extend from cel boundaries.")]
+    [Range(0f, 1f)]
+    public float subductionProximityThreshold = 0.5f;
+
+    [Tooltip("The depth multiplier of subduction zone trenches")]
+    [Range(0f, 1f)]
+    public float trenchDepthMultiplier =0.5f;
 
     [Header("Noise Settings")]
     [Tooltip("Domain warp applied to voronoi cell lookups. Controls how organic cell boundaries appear.")]
