@@ -253,7 +253,12 @@ namespace PlanetGeneration
 
             float terrainColor = terrainNoise.Sample(spherePoint) * 0.1f;
             
-            Color32 infl = influenceData[i];
+            float iu = 0.5f + math.atan2(warpedPoint.z, warpedPoint.x) / (2f * math.PI);
+            float iv = 0.5f - math.asin(math.clamp(warpedPoint.y, -1f, 1f)) / math.PI;
+            int ix = math.clamp((int)(iu * (width - 1)), 0, width - 1);
+            int iy = math.clamp((int)(iv * (height - 1)), 0, height - 1);
+
+            Color32 infl = influenceData[iy * width + ix];
             float convergent = infl.r / 255f;
             float divergent = infl.b / 255f;
 

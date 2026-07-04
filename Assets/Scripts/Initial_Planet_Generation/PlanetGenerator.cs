@@ -3,7 +3,7 @@ using UnityEngine;
 public class PlanetGenerator : MonoBehaviour
 {
     // Add new map types as they're created.
-    public enum MapType { Temperature, Wind, TectonicInfluence, HeightMap, MoistureMap }
+    public enum MapType { Temperature, Wind, TectonicInfluence, HeightMap, MoistureMap, NormalMap, PlanetTexture }
     public MapType displayMap;
 
     // Controls how many vertices run along the edge of each face on the cube sphere.
@@ -27,6 +27,8 @@ public class PlanetGenerator : MonoBehaviour
     TectonicInfluenceMap influenceGen;
     HeightMap heightGen;
     MoistureMap moistureGen;
+    NormalMap normalGen;
+    PlanetTexture planetGen;
 
     [SerializeField]
     MeshFilter[] meshFilters;
@@ -88,6 +90,14 @@ public class PlanetGenerator : MonoBehaviour
         Initialize();
         GenerateMesh();
         GenerateColors();
+    }
+
+    public void RegenerateTexture()
+    {
+        planetGen = new PlanetTexture(heightGen, moistureGen, windTempGen, 
+                                    influenceGen, terrainSettings, climateSettings);
+        planetGen.Generate();
+        ApplyDisplayMap();
     }
 
     public void OnShapeSettingsUpdated()
@@ -160,6 +170,12 @@ public class PlanetGenerator : MonoBehaviour
         moistureGen = new MoistureMap(climateSettings, terrainSettings, heightGen, influenceGen, tectonics);
         moistureGen.Generate();
 
+        normalGen = new NormalMap(heightGen);
+        normalGen.Generate();
+
+        planetGen = new PlanetTexture(heightGen, moistureGen, windTempGen, influenceGen, terrainSettings, climateSettings);
+        planetGen.Generate();
+
         // Apply whichever map is selected
         ApplyDisplayMap();
     }
@@ -167,7 +183,7 @@ public class PlanetGenerator : MonoBehaviour
     public void ApplyDisplayMap()
     {
         // Guard against maps not being generated yet
-        if (windTempGen == null || influenceGen == null || heightGen == null || moistureGen == null) return;
+        if (windTempGen == null || influenceGen == null || heightGen == null || moistureGen == null || normalGen == null || planetGen == null) return;
 
         Texture2D textureToDisplay = displayMap switch
         {
@@ -176,7 +192,9 @@ public class PlanetGenerator : MonoBehaviour
             MapType.TectonicInfluence => influenceGen.tectonicInfluence,
             MapType.HeightMap        => heightGen.height,
             MapType.MoistureMap      => moistureGen.moisture,
-            _                        => moistureGen.moisture
+            MapType.NormalMap        => normalGen.normal,
+            MapType.PlanetTexture    => planetGen.texture,
+            _                        => planetGen.texture
 
         };
 

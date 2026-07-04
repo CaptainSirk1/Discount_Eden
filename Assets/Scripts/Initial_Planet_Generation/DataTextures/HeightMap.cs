@@ -30,7 +30,7 @@ public class HeightMap
         
         // Convert influence data to Color32
         Color32[] infl32 = new Color32[totalPixels];
-        for(int i=0; i<totalPixels; i++) infl32[i] = influence.influenceData[i];
+        for(int i=0; i<totalPixels; i++) infl32[i] = influence.warpedInfluenceData[i];
         iData.CopyFrom(infl32);
 
         tectonics.GetJobData(out NativeArray<TectonicCell> cells, out NativeArray<int> offsets, out NativeArray<int> indices);
