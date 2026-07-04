@@ -24,9 +24,8 @@ public class TectonicInfluenceMap
 
     public Texture2D tectonicInfluence { get; private set; }
     public Color[] influenceData { get; private set; } // Optimization #4
-    public Color[] warpedInfluenceData { get; private set; } 
     public List<FaultSpline> faultSplines { get; private set; }
-public FaultSplineGrid splineGrid { get; private set; }
+    public FaultSplineGrid splineGrid { get; private set; }
 
     public TectonicInfluenceMap(GenerateTectonics tectonics, TerrainSettings settings)
     {
@@ -61,7 +60,6 @@ public FaultSplineGrid splineGrid { get; private set; }
     {
         Texture2D tex = new Texture2D(UVHelper.MAP_WIDTH, UVHelper.MAP_HEIGHT, TextureFormat.RGB24, false);
         influenceData = new Color[UVHelper.MAP_WIDTH * UVHelper.MAP_HEIGHT];
-        warpedInfluenceData = new Color[UVHelper.MAP_WIDTH * UVHelper.MAP_HEIGHT];
 
         // 1.5x average spacing catches all adjacent cells without reaching distant ones.
         float neighborRadius = tectonics.averageCellSpacing * 1.5f;
@@ -130,7 +128,7 @@ public FaultSplineGrid splineGrid { get; private set; }
 
                     // Optimization #3: Cache square distance and only sqrt once
                     float distSqBetweenCells = Vector3.SqrMagnitude(cell.position - neighbor.position);
-                    float cellToNeighbor = Mathf.Sqrt(distSqBetweenCells);
+                    float cellToNeighbor = Mathf.Sqrt(distSqBetweenCells * neighborRadius);
 
                     // Vector pointing from cell toward neighbor.
                     Vector3 toNeighbor = (neighbor.position - cell.position) / cellToNeighbor;
@@ -166,22 +164,11 @@ public FaultSplineGrid splineGrid { get; private set; }
                         divergentStrength = LogarithmicCombine(divergentStrength, contribution);
                 }
 
-                Color pixelColor = new Color(convergentStrength, 0f, divergentStrength);
-                influenceData[y * UVHelper.MAP_WIDTH + x] = pixelColor;
-
-                // Also write to warpedInfluenceData at the warped coordinate.
-                // This creates a lookup map that is indexed by tectonic space coordinates,
-                // allowing consistent sampling from systems that have a warped point.
-                Vector2 warpedUV = UVHelper.SphereToUV(warpedPoint);
-                int wx = Mathf.Clamp((int)(warpedUV.x * (UVHelper.MAP_WIDTH - 1)), 0, UVHelper.MAP_WIDTH - 1);
-                int wy = Mathf.Clamp((int)(warpedUV.y * (UVHelper.MAP_HEIGHT - 1)), 0, UVHelper.MAP_HEIGHT - 1);
-                warpedInfluenceData[wy * UVHelper.MAP_WIDTH + wx] = pixelColor;
+                influenceData[y * UVHelper.MAP_WIDTH + x] = new Color(convergentStrength, 0f, divergentStrength);
             }
         }
 
         influenceData = BlurTexture(influenceData, UVHelper.MAP_WIDTH, UVHelper.MAP_HEIGHT, 5);
-        warpedInfluenceData = BlurTexture(warpedInfluenceData, UVHelper.MAP_WIDTH, UVHelper.MAP_HEIGHT, 5);
-        
         tex.SetPixels(influenceData);
         tex.Apply();
         return tex;
@@ -352,7 +339,7 @@ public FaultSplineGrid splineGrid { get; private set; }
         Vector2 originUV = UVHelper.SphereToUV(points[0]);
         
         // Optimization #4: Use raw array access instead of GetPixelBilinear
-        float strength = UVHelper.GetPixelBilinear(warpedInfluenceData, originUV.x, originUV.y).b;
+        float strength = UVHelper.GetPixelBilinear(influenceData, originUV.x, originUV.y).b;
 
         return new FaultSpline
         {

@@ -12,11 +12,11 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 1837b38391f00544a92aa34b54879522, type: 3}
   m_Name: MountainNoise
   m_EditorClassIdentifier: Assembly-CSharp::NoiseSettings
-  additiveLayer: {fileID: 11400000, guid: 03b326979c7427f45bec58ae7f1b9f39, type: 2}
+  additiveLayer: {fileID: 0}
   additiveStrength: 0.5
   noiseType: 1
   octaves: 4
-  scale: 3
+  scale: 2
   lacunarity: 2
-  persistence: 0.55
-  strength: 0.9
+  persistence: 0.5
+  strength: 1

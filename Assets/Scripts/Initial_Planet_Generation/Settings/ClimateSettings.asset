@@ -24,7 +24,7 @@ MonoBehaviour:
     finalMethane: 0
     finalOxygen: 0
     finalTraceElements: 0
-  averageTemp: 1.77
+  averageTemp: 1.5
   preview:
     atmosphere:
       nitrogen: 0.65

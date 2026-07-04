@@ -13,9 +13,6 @@ public class MoistureMap
     TectonicInfluenceMap influence;
 
     public Texture2D moisture {get; private set;}
-    public Color[] moistureData {get; private set;} 
-    public float[] rawMoistureData { get; private set; }
-
 
     public MoistureMap( ClimateSettings cSettings, 
                         TerrainSettings tSettings, 
@@ -35,9 +32,6 @@ public class MoistureMap
     {
         Queue<int> frontier = new Queue<int>();
         HashSet<int> assigned = new HashSet<int>();
-
-
-
         AssignOceanMoisture(frontier, assigned);
         AssignDerivedMoisture(frontier, assigned);
         moisture = GenerateMoistureMap();
@@ -73,7 +67,7 @@ public class MoistureMap
             Vector2 uv = UVHelper.SphereToUV(boundarySample);
             
             // Optimization #4: Use raw array access helper for boundary sample
-            Color influenceColor = UVHelper.GetPixelBilinear(influence.warpedInfluenceData, uv.x, uv.y);
+            Color influenceColor = UVHelper.GetPixelBilinear(influence.influenceData, uv.x, uv.y);
             float moistureShield = influenceColor.r + influenceColor.b;
 
             float newMoisture = Mathf.Clamp01(current.moistureLevel - (0.01f + moistureShield * tSettings.shieldMultiplier));
@@ -89,8 +83,6 @@ public class MoistureMap
 
     Texture2D GenerateMoistureMap()
     {
-        rawMoistureData = new float[MAP_WIDTH * MAP_HEIGHT];
-
         Texture2D tex = new Texture2D(MAP_WIDTH, MAP_HEIGHT, TextureFormat.RGB24, false);
         Color[] pixels = new Color[MAP_WIDTH * MAP_HEIGHT];
 
@@ -143,7 +135,6 @@ public class MoistureMap
                     // Ocean — depth based on how far below threshold
                     float depth = Mathf.Clamp01((oceanThreshold - elevationRaw) / 2f);
                     pixelColor = Color.Lerp(new Color(0.2f, 0.4f, 0.8f), new Color(0f, 0.1f, 0.4f), depth);
-                    rawMoistureData[y * MAP_WIDTH + x] = 1;
                 }
                 else
                 {
@@ -152,15 +143,14 @@ public class MoistureMap
                     float blendedMoisture = tectonics.GetBlendedMoisture(spherePoint, nearbyScratchpad);
                     float elevationAboveSeaLevel = Mathf.Max(0, elevationRaw - oceanThreshold);
                     float moistureValue = Mathf.Clamp01(blendedMoisture - elevationAboveSeaLevel * 0.3f);
-                    rawMoistureData[y * MAP_WIDTH + x] = moistureValue;
                     pixelColor = Color.Lerp(dryColor, wetColor, moistureValue);
                 }
+
                 pixels[y * MAP_WIDTH + x] = pixelColor;
             }
         }
         tex.SetPixels(pixels);
         tex.Apply();
-        moistureData = pixels;
         return tex;
     }
 }
