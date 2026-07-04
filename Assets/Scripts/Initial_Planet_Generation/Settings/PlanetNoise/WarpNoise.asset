@@ -15,8 +15,8 @@ MonoBehaviour:
   additiveLayer: {fileID: 0}
   additiveStrength: 0.5
   noiseType: 0
-  octaves: 4
+  octaves: 3
   scale: 4
   lacunarity: 2
   persistence: 0.5
-  strength: 0.3
+  strength: 0.2

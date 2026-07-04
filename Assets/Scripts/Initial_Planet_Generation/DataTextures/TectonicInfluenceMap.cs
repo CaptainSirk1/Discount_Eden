@@ -128,7 +128,11 @@ public class TectonicInfluenceMap
 
                     // Optimization #3: Cache square distance and only sqrt once
                     float distSqBetweenCells = Vector3.SqrMagnitude(cell.position - neighbor.position);
-                    float cellToNeighbor = Mathf.Sqrt(distSqBetweenCells * neighborRadius);
+
+                    // Skip neighbors outside the radius — same filter the old GetCellsInRadius applied
+                    if (distSqBetweenCells > neighborRadius * neighborRadius) continue;
+                    float cellToNeighbor = Mathf.Sqrt(distSqBetweenCells);
+                    
 
                     // Vector pointing from cell toward neighbor.
                     Vector3 toNeighbor = (neighbor.position - cell.position) / cellToNeighbor;

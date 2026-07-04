@@ -127,7 +127,7 @@ public class MoistureMap
                 float elevationRaw = (elevation * 4f) - 1f;
 
                 // Now compare directly against oceanThreshold in -1/1 space
-                float oceanThreshold = tSettings.globalMoisture * 2f - 1f;
+                float oceanThreshold = tSettings.globalMoisture;
 
                 Color pixelColor;
                 if (elevationRaw <= oceanThreshold)

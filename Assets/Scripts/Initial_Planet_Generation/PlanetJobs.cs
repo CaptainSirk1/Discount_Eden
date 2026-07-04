@@ -111,10 +111,11 @@ namespace PlanetGeneration
 
         private float SampleFBm(float3 point)
         {
+            float normalizedSeed = seed % 100 / 100f;
             float3 seedOffset = new float3(
-                seed * 0.3183f,
-                seed * 0.1547f,
-                seed * 0.2718f
+                normalizedSeed * 3.183f,
+                normalizedSeed * 1.547f,
+                normalizedSeed * 2.718f
             );
 
             float value = 0f;
@@ -124,7 +125,7 @@ namespace PlanetGeneration
 
             for (int i = 0; i < octaves; i++)
             {
-                value += noise.snoise((point + seedOffset) * frequency) * amplitude;
+                value += noise.snoise(point * frequency + seedOffset) * amplitude;
                 maxValue += amplitude;
                 amplitude *= persistence;
                 frequency *= lacunarity;
@@ -135,10 +136,11 @@ namespace PlanetGeneration
 
         private float SampleRidged(float3 point)
         {
+            float normalizedSeed = seed % 100 / 100f;
             float3 seedOffset = new float3(
-                seed * 0.3183f,
-                seed * 0.1547f,
-                seed * 0.2718f
+                normalizedSeed * 3.183f,
+                normalizedSeed * 1.547f,
+                normalizedSeed * 2.718f
             );
 
             float value = 0f;
@@ -148,7 +150,7 @@ namespace PlanetGeneration
 
             for (int i = 0; i < octaves; i++)
             {
-                float n = noise.snoise((point + seedOffset) * frequency);
+                float n = noise.snoise(point * frequency + seedOffset);
                 n = 1f - math.abs(n);
                 n *= n;
 
@@ -253,6 +255,8 @@ namespace PlanetGeneration
 
             float terrainColor = terrainNoise.Sample(spherePoint) * 0.1f;
             
+        
+
             Color32 infl = influenceData[i];
             float convergent = infl.r / 255f;
             float divergent = infl.b / 255f;

@@ -19,4 +19,4 @@ MonoBehaviour:
   scale: 5
   lacunarity: 2
   persistence: 0.5
-  strength: 0.1
+  strength: 0.05
