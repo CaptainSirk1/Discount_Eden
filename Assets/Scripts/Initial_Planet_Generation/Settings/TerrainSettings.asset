@@ -13,17 +13,18 @@ MonoBehaviour:
   m_Name: TerrainSettings
   m_EditorClassIdentifier: Assembly-CSharp::TerrainSettings
   planetRadius: 10
-  worldSeed: 24245
-  cellCount: 160
-  continentCenters: 24
+  worldSeed: 65346534
+  cellCount: 64
+  continentCenters: 32
   strengthMultiplier: 0.7
   heightRange: 10
   continentEdgeNoise: 0.8
   elevationCoherence: 0.9
-  subductionThreshold: 0.131
-  subductionDecay: 0.866
-  subductionProximityThreshold: 0.171
-  trenchDepthMultiplier: 0.2
+  directionCoherence: 0.99
+  subductionThreshold: 0.2
+  subductionDecay: 0.3
+  subductionProximityThreshold: 0
+  trenchDepthMultiplier: 0.3
   warpNoise: {fileID: 11400000, guid: 584cc43926235dc45abe2187b4986880, type: 2}
   terrainNoise: {fileID: 11400000, guid: d0de34f73118726409eead1bc9237292, type: 2}
   mountainNoise: {fileID: 11400000, guid: fa024efa456e99f4e8e154496f787a62, type: 2}

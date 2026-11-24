@@ -193,6 +193,9 @@ namespace PlanetGeneration
         [ReadOnly] public NativeArray<int> bucketIndices;
         public int bucketSize;
 
+        //[ReadOnly] public NativeArray<float3> craterPositions;
+        //[ReadOnly] public NativeArray<float> craterRadii;
+
         [ReadOnly] public NativeArray<Color32> influenceData;
 
         [WriteOnly] public NativeArray<Color32> heightData;
@@ -305,4 +308,5 @@ namespace PlanetGeneration
             return weightedElevation / totalWeight;
         }
     }
+
 }
