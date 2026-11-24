@@ -1,0 +1,54 @@
+using System.Collections.Generic;
+using Unity.Collections;
+using Unity.Mathematics;
+
+namespace PlanetGen.Tectonics.MeshSim
+{
+    /// <summary>Harness-only instrumentation of the ORIGINAL code: local barycentric volume before/after each op.</summary>
+    public static class Instr
+    {
+        public static bool On;
+        public static readonly Dictionary<string, double> Vol = new Dictionary<string, double>();
+        public static readonly Dictionary<string, double> VolC = new Dictionary<string, double>();
+        public static readonly Dictionary<string, int> Cnt = new Dictionary<string, int>();
+        public static void Add(string k, double dv, double dvc)
+        {
+            Vol[k] = (Vol.TryGetValue(k, out var x) ? x : 0) + dv;
+            VolC[k] = (VolC.TryGetValue(k, out var y) ? y : 0) + dvc;
+            Cnt[k] = (Cnt.TryGetValue(k, out var n) ? n : 0) + 1;
+        }
+        public static void Reset() { Vol.Clear(); VolC.Clear(); Cnt.Clear(); }
+
+        public static double Area(NativeArray<int> V, NativeArray<int> O, NativeArray<int> vc, NativeArray<float3> pos, int v)
+        {
+            double a = 0; int c0 = vc[v], c = c0, n = 0;
+            do
+            {
+                float3 p = pos[v], q = pos[V[MeshTopo.Next(c)]], r = pos[V[MeshTopo.Prev(c)]];
+                a += 0.5 * math.length(math.cross(q - p, r - p)) / 3.0;
+                c = MeshTopo.Next(O[MeshTopo.Next(c)]);
+            } while (c != c0 && ++n < 64);
+            return a;
+        }
+        public static double LV(NativeArray<int> V, NativeArray<int> O, NativeArray<int> vc, NativeArray<float3> pos, NativeArray<float> t, NativeArray<byte> alive, params int[] vs)
+        {
+            double s = 0; foreach (var v in vs) if (alive[v] == 1) s += t[v] * Area(V, O, vc, pos, v); return s;
+        }
+        public static double LVc(NativeArray<int> V, NativeArray<int> O, NativeArray<int> vc, NativeArray<float3> pos, NativeArray<float> t, NativeArray<byte> alive, float cont, params int[] vs)
+        {
+            double s = 0; foreach (var v in vs) if (alive[v] == 1 && t[v] > 0.75f * cont) s += t[v] * Area(V, O, vc, pos, v); return s;
+        }
+        public static List<int> TwoRing(NativeArray<int> V, NativeArray<int> O, NativeArray<int> vc, int b, int d)
+        {
+            var set = new HashSet<int> { b, d };
+            var r1 = new List<int>();
+            foreach (var s in new[] { b, d }) { int c0 = vc[s], c = c0, n = 0; do { r1.Add(V[MeshTopo.Next(c)]); c = MeshTopo.Next(O[MeshTopo.Next(c)]); } while (c != c0 && ++n < 64); }
+            foreach (var x in r1) { set.Add(x); int c0 = vc[x], c = c0, n = 0; do { set.Add(V[MeshTopo.Next(c)]); c = MeshTopo.Next(O[MeshTopo.Next(c)]); } while (c != c0 && ++n < 64); }
+            return new List<int>(set);
+        }
+        public static double LVset(NativeArray<int> V, NativeArray<int> O, NativeArray<int> vc, NativeArray<float3> pos, NativeArray<float> t, NativeArray<byte> alive, List<int> set)
+        { double s = 0; foreach (var v in set) if (alive[v] == 1) s += t[v] * Area(V, O, vc, pos, v); return s; }
+        public static double LVsetC(NativeArray<int> V, NativeArray<int> O, NativeArray<int> vc, NativeArray<float3> pos, NativeArray<float> t, NativeArray<byte> alive, List<int> set, float cont)
+        { double s = 0; foreach (var v in set) if (alive[v] == 1 && t[v] > 0.75f * cont) s += t[v] * Area(V, O, vc, pos, v); return s; }
+    }
+}

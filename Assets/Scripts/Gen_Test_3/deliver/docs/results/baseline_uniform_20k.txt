@@ -1,0 +1,38 @@
+# baseline: uniform n=20000 seed=12345 dt=0.891 steps=4489 L=0.0267
+# t_Myr  totalVol(1e9km3)  contVol  contArea%  verts  meanTension  meanDamage  contDamage  fracDamaged>0.5
+    446   11.464    2.776   18.2  20574   0.293  0.834  0.824  0.881
+    891   10.696    1.984   13.4  20334   0.011  0.277  0.249  0.000
+   1337   10.256    2.253   14.6  20212   0.002  0.074  0.068  0.000
+   1782    9.894    2.474   15.8  20216   0.006  0.022  0.018  0.000
+   2228    9.573    2.699   16.8  20604   0.008  0.008  0.005  0.000
+   2673    9.272    2.895   17.7  20902   0.006  0.003  0.001  0.000
+   3119    9.011    2.953   17.8  20998   0.002  0.002  0.000  0.000
+   3565    8.763    2.977   17.8  20971   0.009  0.003  0.000  0.000
+   4000    8.523    2.969   17.5  20998   0.013  0.003  0.000  0.000
+
+# volume change by stage (1e9 km^3), all crust | continental-classified (t>26.25 km):
+  initial 12.749 | 0.000   final 8.523 | 2.969
+  move(area change, thickness fixed)          -1.093 |    -1.516
+  integrate                                   -3.314 |     4.140
+  topo:repair                                  0.000 |     0.000
+  topo:flip                                    0.008 |     0.024
+  topo:collisions                              0.029 |     0.039
+  topo:collapse                                0.439 |     0.525
+  topo:split+flip                             -0.294 |    -0.243
+# integrate decomposition (1e9 km^3, all crust):
+  excluded_triangles                          -4.535
+  ratio_clamp                                  0.000
+  oceanic_compression_loss                    -0.008
+  erosion                                     -0.076
+  max_thickness_clamp                          0.000
+  ocean_floor_fill                             0.211
+  (sum of terms)                              -4.407   vs measured integrate -3.314
+# topology ops (local barycentric volume before/after, 1e9 km^3):  count  all | continental
+  collapse_forced           163     0.043 |     0.045
+  collapse_merge            846    -0.002 |     0.028
+  collapse_subduct         9644     0.451 |     0.517
+  flip                    37122    -0.093 |    -0.074
+  split_collision          2929    -0.017 |     0.761
+  split_ordinary           7786    -0.088 |     0.769
+  split_rift                684    -0.105 |     0.540
+# counters: splits 11399 rifts 684 collapses 10653 subducted 9807 contSubducted 0

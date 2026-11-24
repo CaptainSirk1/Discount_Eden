@@ -1,0 +1,233 @@
+// Baseline measurement of the ORIGINAL mesh simulation (unchanged jobs, instrumented topology copy).
+// Mirrors PlanetTectonicsMesh.BeginSimulation / BuildParams / ScheduleSteps with the component defaults.
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using Unity.Mathematics;
+using Unity.Jobs;
+using PlanetGen.Tectonics;
+using PlanetGen.Tectonics.MeshSim;
+
+static class Baseline
+{
+    // ---- component defaults (PlanetTectonicsMesh.cs) ----
+    public static int seed = 12345, targetVertexCount = 20000, convN = 14, convEven = 6;
+    public static float capMul = 2f, jitter = 0.15f, R = 6371f;
+    public static bool uniform = true; public static float initT = 25f, initAge = 0f, initVar = 0.5f, coverage = 0.3f, noiseScale = 1.3f;
+    public static float oceanT = 7f, contT = 35f;
+    public static bool cooling = true; public static float coolTau = 1500f, coolMax = 1000f, thermRef = 400f;
+    public static float maxStepFraction = 0.2f, maxEdge = 1.6f, minEdge = 0.45f, mergeLen = 0.7f, sliver = 0.2f, relaxation = 0f; public static int maxVal = 12;
+    public static float barrierStart = 0.9f, barrierK = 10f, barrierAge = 1.5f, oceanicCompression = 0f, gravSpread = 0.00004f, gravLock = 1f, lockMarginKm = 8f;
+    public static bool extOn = true; public static float extStiff = 0.9f, extAgeF = 1.5f, extThickF = 2.5f, extYield = 0.2f, extRate = 0.02f, extHeal = 0.003f, fracRes = 0.05f, riftDamage = 0.5f;
+    public static float convStrength = 0.003f, convRadScale = 1.3f, plumeThr = 0.7f, plumeRad = 0.3f, convDrift = 0.0002f, tempNoise = 0.005f, insul = 0.012f, surfCool = 0.008f, subCool = 0.5f, fbRelax = 0.005f;
+    public static float ageResist = 1.5f, ageSat = 300f, velTau = 20f, coupling = 0.9f; public static int rigidity = 0, constraintPasses = 6; public static float slabPull = 0.002f;
+    public static float subThk = 12f, subDen = 0.2f, riftOpenThr = 0.1f, riftBlend = 0.35f, overThick = 0.35f, orogenyGain = 0.01f, orogenyDecay = 300f, erosion = 0.0005f, maxThk = 75f, arcGain = 0.01f, arcDecay = 150f;
+    public static float velRef = 0.003f, faultThr = 0.12f, faultMem = 150f, transDom = 1.2f;
+
+    static SphereMeshState s; static MeshParams M; static float dt, L, spacing; static uint seedHash;
+
+    static MeshParams BuildParams(float time)
+    {
+        float cellAngle = math.acos(1f - 2f / convN);
+        float lockMargin = math.max(0.1f, lockMarginKm);
+        var P = new TectonicParams
+        {
+            dt = dt, spacing = spacing, interactR = L, seed = seedHash, maxSpeed = maxStepFraction * L / dt,
+            convRadius = cellAngle * convRadScale, convStrength = convStrength, plumeThreshold = plumeThr, plumeRadius = plumeRad,
+            convDrift = convDrift, convMinSep = 0.5f * cellAngle, tempNoise = tempNoise, insulationHeat = insul, subductionCool = subCool, feedbackRelax = fbRelax,
+            ageResist = ageResist, ageRef = ageSat, velTau = velTau, couple = coupling, slabPull = slabPull,
+            subductThickness = subThk, subductDensity = subDen, closeThreshold = 0.03f * velRef, openThreshold = riftOpenThr * velRef, riftBlend = riftBlend,
+            overThick = overThick, orogenyGain = orogenyGain, orogenyDecay = orogenyDecay, erosion = erosion, maxThickness = maxThk, arcGain = arcGain, arcDecay = arcDecay,
+            faultThreshold = faultThr, faultMemory = faultMem, velRef = velRef, transformDominance = transDom, oceanThick = oceanT, contThick = contT,
+            lockMargin = lockMargin, lockStart = maxThk - lockMargin, lockStrength = gravLock,
+        };
+        float lo = math.min(minEdge, maxEdge * 0.45f);
+        return new MeshParams
+        {
+            P = P, L = L, Lmin = lo * L, Lmax = maxEdge * L, Lmerge = math.clamp(mergeLen, lo, maxEdge * 0.49f) * L, sliverH = sliver * L,
+            minOrient = 1e-3f * L * L, flipEps = math.max(1e-3f * L * L, 2e-7f), maxValence = maxVal,
+            barrierRest = barrierStart * L, barrierK = barrierK, barrierAge = barrierAge, oceanCompress = oceanicCompression,
+            riftOpen = riftOpenThr * velRef, relax = relaxation, flashDecay = 20f, spreading = gravSpread,
+            globalThermal = MeshStep.GlobalThermalAge(time, cooling, coolTau, coolMax), thermalRef = math.max(1f, thermRef),
+            extEnabled = extOn, extMax = extStiff, extAge = extAgeF, extThick = extThickF, extYield = extYield, extRate = extRate, extHeal = extHeal,
+            extFractured = fracRes, riftDamage = riftDamage, surfaceCool = surfCool,
+        };
+    }
+
+    static void Begin()
+    {
+        seedHash = (uint)seed * 2654435761u + 12345u;
+        int freq = Math.Max(2, (int)Math.Round(Math.Sqrt((targetVertexCount - 2) / 10.0)));
+        var verts = new List<float3>(); var tris = new List<int>();
+        SphereMeshState.BuildGeodesic(freq, verts, tris);
+        int nv = verts.Count;
+        double sum = 0; int ne = 0;
+        for (int t = 0; t < tris.Count; t += 3) for (int k = 0; k < 3; k++) { sum += math.distance(verts[tris[t + k]], verts[tris[t + (k + 1) % 3]]); ne++; }
+        L = (float)(sum / ne); spacing = math.sqrt(4f * math.PI / nv);
+        dt = math.clamp(maxStepFraction * L / (convStrength * 2f), 0.1f, 25f);
+        int vCap = Math.Max(nv + 64, (int)(nv * capMul));
+        s = new SphereMeshState(vCap, vCap * 2, convN);
+        var rng = new Unity.Mathematics.Random(seedHash | 1u);
+        for (int i = 0; i < nv; i++)
+        {
+            float3 p = verts[i]; TMath.TangentFrame(p, out float3 t, out float3 bt);
+            float a = rng.NextFloat(2f * math.PI);
+            verts[i] = math.normalize(p + (t * math.cos(a) + bt * math.sin(a)) * (rng.NextFloat() * jitter * L));
+        }
+        s.Load(verts, tris);
+        M = BuildParams(0);
+        var init = new CrustInit { uniform = uniform, initialThickness = initT, initialAge = initAge, variation = initVar, coverage = coverage, noiseScale = noiseScale, convEvenness = convEven };
+        MeshStep.InitCrust(s, M, nv, ref rng, init);
+        MeshStep.Topology(s, M, false).Run();
+        for (int k = MeshTopo.Splits; k <= MeshTopo.Rifts; k++) s.counters[k] = 0;
+        s.counters[MeshTopo.ConsumedThisStep] = 0;
+    }
+
+    // barycentric volume from CURRENT geometry; returns (all, continental t > 0.75 contT, continental area)
+    static (double v, double vc, double ac, double area) Vol()
+    {
+        var A = new double[s.VCap];
+        for (int t = 0; t < s.TCap; t++)
+        {
+            if (s.triAlive[t] == 0) continue;
+            int a = s.V[3 * t], b = s.V[3 * t + 1], c = s.V[3 * t + 2];
+            double ar = 0.5 * math.length(math.cross(s.pos[b] - s.pos[a], s.pos[c] - s.pos[a])) / 3.0;
+            A[a] += ar; A[b] += ar; A[c] += ar;
+        }
+        double v = 0, vc = 0, ac = 0, at = 0;
+        for (int i = 0; i < s.VCap; i++)
+        {
+            if (s.alive[i] == 0) continue;
+            double th = s.thickness[i]; v += th * A[i]; at += A[i];
+            if (th > 0.75 * contT) { vc += th * A[i]; ac += A[i]; }
+        }
+        return (v, vc, ac, at);
+    }
+
+    static readonly Dictionary<string, double> stage = new Dictionary<string, double>(), stageC = new Dictionary<string, double>();
+    static void Acc(string k, (double v, double vc, double ac, double area) a, (double v, double vc, double ac, double area) b)
+    {
+        stage[k] = (stage.TryGetValue(k, out var x) ? x : 0) + (b.v - a.v);
+        stageC[k] = (stageC.TryGetValue(k, out var y) ? y : 0) + (b.vc - a.vc);
+    }
+    static readonly Dictionary<string, double> integ = new Dictionary<string, double>();
+    static void AccI(string k, double v) { integ[k] = (integ.TryGetValue(k, out var x) ? x : 0) + v; }
+
+    // Replicates MeshIntegrateJob's thickness update term by term (reads the same inputs), using the job's own
+    // area quantities, to split the integrate volume change into its causes. Verified against the job output.
+    static void DecomposeIntegrate(float[] tBefore)
+    {
+        var P = M.P;
+        for (int i = 0; i < s.VCap; i++)
+        {
+            if (s.alive[i] == 0) continue;
+            float3 pi = s.pos[i];
+            uint mask = s.areaMask[i];
+            float area = 0f, areaAll = 0f; int c0 = s.vc[i], c = c0, guard = 0;
+            do
+            {
+                float tri = 0.5f * math.length(math.cross(s.pos[s.V[MeshTopo.Next(c)]] - pi, s.pos[s.V[MeshTopo.Prev(c)]] - pi));
+                areaAll += tri; if (guard < 32 && (mask & (1u << guard)) != 0u) area += tri;
+                c = MeshTopo.Next(s.O[MeshTopo.Next(c)]);
+            } while (c != c0 && ++guard < 64);
+            area /= 3f; areaAll /= 3f;
+            float t0 = tBefore[i];
+            float rawRatio = mask == 0u ? 1f : 1f + (s.areaOld[i] - area) / math.max(areaAll, 1e-12f);
+            float ratio = math.clamp(rawRatio, 0.5f, 2f);
+            float cf = TMath.CrustFrac(t0, P);
+            // volume-conserving reference: t * areaAll_new should equal t0 * (areaOld_full) ... measure each deviation
+            double A = areaAll;
+            // excluded (boundary/subduction) triangle area change not compensated:  t0 * (dA_excluded)
+            double dAexcl = (areaAll - area) - (s.areaFull[i] - s.areaOld[i]);
+            AccI("excluded_triangles", t0 * dAexcl);
+            AccI("ratio_clamp", t0 * (rawRatio - ratio) * -A);
+            float t = t0;
+            if (ratio > 1f)
+            {
+                float f = math.lerp(M.oceanCompress, 1f, math.saturate(cf * 2f));
+                AccI("oceanic_compression_loss", -t0 * (ratio - 1f) * (1f - f) * A);
+                t += t0 * (ratio - 1f) * f;
+            }
+            else
+            {
+                float tt = t0 * ratio;
+                if (tt < P.oceanThick) AccI("ocean_floor_fill", (P.oceanThick - tt) * A);
+                t = math.max(P.oceanThick, tt);
+            }
+            float te = t;
+            if (t > P.contThick) te = P.contThick + (t - P.contThick) * math.exp(-P.erosion * dt);
+            AccI("erosion", (te - t) * A);
+            float tc = math.min(te, P.maxThickness);
+            AccI("max_thickness_clamp", (tc - te) * A);
+        }
+    }
+
+    public static void Main(string[] args)
+    {
+        float total = 4000f; int report = 250;
+        foreach (var a in args)
+        {
+            var kv = a.Split('='); if (kv.Length != 2) continue;
+            switch (kv[0])
+            {
+                case "seeded": uniform = kv[1] != "1" ? uniform : false; break;
+                case "n": targetVertexCount = int.Parse(kv[1]); break;
+                case "T": total = float.Parse(kv[1]); break;
+                case "seed": seed = int.Parse(kv[1]); break;
+                case "report": report = int.Parse(kv[1]); break;
+            }
+        }
+        Begin();
+        int steps = (int)Math.Ceiling(total / dt);
+        int passes = MeshStep.CouplePasses(constraintPasses, rigidity);
+        Instr.On = true;
+        var v0 = Vol();
+        Console.WriteLine($"# baseline: {(uniform ? "uniform" : "seeded")} n={targetVertexCount} seed={seed} dt={dt:F3} steps={steps} L={L:F4}");
+        Console.WriteLine($"# t_Myr  totalVol(1e9km3)  contVol  contArea%  verts  meanTension  meanDamage  contDamage  fracDamaged>0.5");
+        double r2 = (double)R * R / 1e9;
+        var tB = new float[s.VCap];
+        for (int st = 0; st < steps; st++)
+        {
+            float time = st * dt;
+            M = BuildParams(time);
+            MeshStep.Drive(s, M, dt).Run(s.VCap);
+            MeshStep.Velocity(s, M, dt).Run(s.VCap);
+            for (int p = 0; p < passes; p++) MeshStep.Couple(s, M, p, rigidity).Run(s.VCap);
+            MeshStep.Area(s, M).Run(s.VCap);
+            var a0 = Vol();
+            MeshStep.Move(s, M, dt).Run(s.VCap);
+            var a1 = Vol(); Acc("move(area change, thickness fixed)", a0, a1);
+            for (int i = 0; i < s.VCap; i++) tB[i] = s.thickness[i];
+            DecomposeIntegrate(tB);
+            MeshStep.Integrate(s, M, dt).Run(s.VCap);
+            var a2 = Vol(); Acc("integrate", a1, a2);
+            var topo = MeshStep.Topology(s, M, false);
+            topo.Begin();
+            var b0 = Vol(); topo.PassRepair(); var b1 = Vol(); Acc("topo:repair", b0, b1);
+            topo.FlipPass(); var b2 = Vol(); Acc("topo:flip", b1, b2);
+            topo.PassCollisions(); var b3 = Vol(); Acc("topo:collisions", b2, b3);
+            topo.PassCollapse(); var b4 = Vol(); Acc("topo:collapse", b3, b4);
+            topo.PassSplit(); var b5 = Vol(); Acc("topo:split+flip", b4, b5);
+            topo.End();
+            MeshStep.Feedback(s, M, dt, (uint)st).Run();
+            if ((st + 1) % report == 0 || st == steps - 1)
+            {
+                var d = MeshDiagnostics.Compute(s, M, R);
+                var vv = Vol();
+                int damaged = 0, cont = 0;
+                for (int i = 0; i < s.VCap; i++) if (s.alive[i] == 1 && s.thickness[i] > 0.75f * contT) { cont++; if (s.damage[i] > 0.5f) damaged++; }
+                Console.WriteLine($"{(st + 1) * dt,7:F0} {vv.v * r2,8:F3} {vv.vc * r2,8:F3} {100 * vv.ac / vv.area,6:F1} {s.counters[MeshTopo.AliveV],6} {d.meanTension,7:F3} {d.meanDamage,6:F3} {d.continentalMeanDamage,6:F3} {(cont > 0 ? (float)damaged / cont : 0),6:F3}");
+            }
+        }
+        var vf = Vol();
+        Console.WriteLine($"\n# volume change by stage (1e9 km^3), all crust | continental-classified (t>26.25 km):");
+        Console.WriteLine($"  initial {v0.v * r2:F3} | {v0.vc * r2:F3}   final {vf.v * r2:F3} | {vf.vc * r2:F3}");
+        foreach (var k in stage.Keys) Console.WriteLine($"  {k,-40} {stage[k] * r2,9:F3} | {stageC[k] * r2,9:F3}");
+        Console.WriteLine($"# integrate decomposition (1e9 km^3, all crust):");
+        double sumI = 0; foreach (var k in integ.Keys) { Console.WriteLine($"  {k,-40} {integ[k] * r2,9:F3}"); sumI += integ[k]; }
+        Console.WriteLine($"  {"(sum of terms)",-40} {sumI * r2,9:F3}   vs measured integrate {stage["integrate"] * r2:F3}");
+        Console.WriteLine($"# topology ops (local barycentric volume before/after, 1e9 km^3):  count  all | continental");
+        foreach (var k in Instr.Vol.Keys.OrderBy(x => x)) Console.WriteLine($"  {k,-20} {Instr.Cnt[k],8} {Instr.Vol[k] * r2,9:F3} | {Instr.VolC[k] * r2,9:F3}");
+        Console.WriteLine($"# counters: splits {s.counters[MeshTopo.Splits]} rifts {s.counters[MeshTopo.Rifts]} collapses {s.counters[MeshTopo.Collapses]} subducted {s.counters[MeshTopo.Subducted]} contSubducted {s.counters[MeshTopo.ContinentalSubducted]}");
+    }
+}

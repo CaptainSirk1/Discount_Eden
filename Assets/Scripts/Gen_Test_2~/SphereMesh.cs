@@ -25,6 +25,7 @@ namespace PlanetGen.Tectonics.MeshSim
 
         public float L;            // target edge length (unit sphere chord)
         public float Lmin, Lmax;   // collapse below / split above (absolute)
+        public float Lmerge;       // converging buoyant edges merge below this (absolute)
         public float sliverH;      // vertex closer than this to its opposite edge = vertex/edge collision
         public float minOrient;    // orientation test threshold
         public float flipEps;      // Delaunay test tolerance
@@ -38,6 +39,23 @@ namespace PlanetGen.Tectonics.MeshSim
         public float relax;         // tangential smoothing weight per step
         public float flashDecay;    // Myr, for the TopologyEvents view
         public float spreading;     // rad/Myr per km of excess-thickness difference (orogenic collapse)
+
+        // planetary cooling
+        public float globalThermal; // Myr, the planet's global thermal age at the current step
+        public float thermalRef;    // Myr, thermal age at which strength is half way (T / (T + ref))
+
+        // extension resistance and damage
+        public bool extEnabled;
+        public float extMax;        // max fraction of opening removed by intact crust
+        public float extAge;        // thermal-strength factor
+        public float extThick;      // crust-fraction (thickness) factor
+        public float extYield;      // tension (x velocityReference per radian) below which no damage accrues
+        public float extRate;       // damage per Myr per unit of tension above yield
+        public float extHeal;       // 1/Myr exponential healing below yield
+        public float extFractured;  // fraction of opening removed by fully damaged crust
+        public float riftDamage;    // damage needed before continental splits make new crust
+
+        public float surfaceCool;   // convection feedback: exposed-mantle cooling per Myr
     }
 
     public static class MeshTopo
@@ -69,9 +87,9 @@ namespace PlanetGen.Tectonics.MeshSim
         public NativeArray<float> stats;   // [0] min edge / L, [1] max edge / L
 
         // vertex attributes
-        public NativeArray<float3> pos, posTmp, vel, velNext, velTmp, driven, slab, compAxis, faultDir;
+        public NativeArray<float3> pos, posTmp, vel, velNext, velTmp, spreadVel, driven, slab, compAxis, faultDir;
         public NativeArray<float> thickness, age, density, stiffness, orogeny, extension, arc, shear, hotspot, faultActivity;
-        public NativeArray<float> areaOld, flashSplit, flashCollapse;
+        public NativeArray<float> areaOld, areaFull, flashSplit, flashCollapse, damage, tension;
         public NativeArray<float> rClose, rOpen, rShear, rSub, rOver, rCrumple;
         public NativeArray<byte> alive, faultType;
         public NativeArray<int> nearest;
@@ -80,7 +98,8 @@ namespace PlanetGen.Tectonics.MeshSim
         // convection
         public NativeArray<Convection> conv;
         public NativeArray<float3> convSumCont, convSumSub;
-        public NativeArray<int> convTotal, convCont, convSub;
+        public NativeArray<float> convArea, convContArea;
+        public NativeArray<int> convSub;
 
         NativeArray<T> Alloc<T>(int n) where T : struct
         {
@@ -101,13 +120,13 @@ namespace PlanetGen.Tectonics.MeshSim
             stats = Alloc<float>(4);
 
             pos = Alloc<float3>(vCap); posTmp = Alloc<float3>(vCap); vel = Alloc<float3>(vCap);
-            velNext = Alloc<float3>(vCap); velTmp = Alloc<float3>(vCap); driven = Alloc<float3>(vCap); slab = Alloc<float3>(vCap);
+            velNext = Alloc<float3>(vCap); velTmp = Alloc<float3>(vCap); spreadVel = Alloc<float3>(vCap); driven = Alloc<float3>(vCap); slab = Alloc<float3>(vCap);
             compAxis = Alloc<float3>(vCap); faultDir = Alloc<float3>(vCap);
             thickness = Alloc<float>(vCap); age = Alloc<float>(vCap); density = Alloc<float>(vCap);
             stiffness = Alloc<float>(vCap); orogeny = Alloc<float>(vCap); extension = Alloc<float>(vCap);
             arc = Alloc<float>(vCap); shear = Alloc<float>(vCap); hotspot = Alloc<float>(vCap);
             faultActivity = Alloc<float>(vCap);
-            areaOld = Alloc<float>(vCap); flashSplit = Alloc<float>(vCap); flashCollapse = Alloc<float>(vCap);
+            areaOld = Alloc<float>(vCap); areaFull = Alloc<float>(vCap); damage = Alloc<float>(vCap); tension = Alloc<float>(vCap); flashSplit = Alloc<float>(vCap); flashCollapse = Alloc<float>(vCap);
             rClose = Alloc<float>(vCap); rOpen = Alloc<float>(vCap); rShear = Alloc<float>(vCap);
             rSub = Alloc<float>(vCap); rOver = Alloc<float>(vCap); rCrumple = Alloc<float>(vCap);
             alive = Alloc<byte>(vCap); faultType = Alloc<byte>(vCap);
@@ -115,7 +134,7 @@ namespace PlanetGen.Tectonics.MeshSim
 
             conv = Alloc<Convection>(convCount);
             convSumCont = Alloc<float3>(convCount); convSumSub = Alloc<float3>(convCount);
-            convTotal = Alloc<int>(convCount); convCont = Alloc<int>(convCount); convSub = Alloc<int>(convCount);
+            convArea = Alloc<float>(convCount); convContArea = Alloc<float>(convCount); convSub = Alloc<int>(convCount);
         }
 
         public void Dispose()

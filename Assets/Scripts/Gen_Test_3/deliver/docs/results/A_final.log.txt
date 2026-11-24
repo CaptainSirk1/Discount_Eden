@@ -1,0 +1,9 @@
+# normal seeded n=5000 seed=12345 dt=1.822 L=0.0547 T=1000
+#   t    crust  resid%   contA%  contV  buoyA%  meanCT  maxT   rift  magma   subd  floor  cDmg  cFrac cStress cAch  cSpeed  Tmin  Tmax  dist  onC  clus  loc  LM | felsic vol, area, meanT, in thin crust, +magmatic, -subducted
+     0   8.109  0.0000   28.7  5.311   30.3   36.3    42   0.00   0.00   0.00   0.00 0.000 0.000  0.000 0.000  0.000 -0.97  0.90 0.000 1.00  0.18 0.00   7 | fel  5.395  30.1%  35.7km thin  0.06 + 0.00 - 0.00
+  1001   7.993  0.0000   28.5  6.458   30.7   44.4   102   0.00   0.00   0.00   0.00 0.056 0.008  0.129 0.541  0.455 -0.99  0.94 0.155 0.99  0.02 0.34   9 | fel  5.324  40.8%  27.7km thin  0.37 + 0.00 - 0.07
+# final cell temps: -0.20 -0.28 -0.37 -0.82 -0.99 0.85 0.57 0.41 0.94 0.30 -0.38 0.35 0.16 -0.55
+# ledger (1e9 km^3): initial 8.1089  +rift 0.0000  +floor 0.0000  +magma 0.0000  -squeeze 0.0000  -slabCollapse 0.0000  -erosionRec 0.0000  -delam 0.1162  (charged 0.0000, buoyantSubducted 0.0000, eroded moved 0.8081)
+# spring solve: residual rz/rz0 = 1.22E-002
+# crust 7.992661  expected 7.992660  residual 1.484E-007  felsic residual 8.625E-009  relaminated 0.000  thickness x barycentric-area total differs by -0.28%   wall 30s
+# validation OK

@@ -28,12 +28,36 @@ namespace PlanetGen.Tectonics.MeshSim
         public float planetRadiusKm = 6371f;
 
         [Header("Initial Crust")]
-        [Range(0.05f, 0.7f)] public float continentCoverage = 0.3f;
-        [Range(0.3f, 4f)] public float continentNoiseScale = 1.3f;
-        public float oceanThicknessKm = 7f;
-        public float continentThicknessKm = 35f;
-        public float initialCrustThicknessKm = 22f;
+        [Tooltip("True: start from near-uniform primordial crust and let continents emerge. " +
+                 "False: noise-seeded continents (useful for testing continental behaviour in isolation).")]
+        public bool uniformInitialCrust = true;
+        [Tooltip("Uniform mode: starting thickness, km. Independent of oceanThicknessKm / continentThicknessKm. " +
+                 "Above ~21 km (crust fraction 0.5) it is buoyant and thickens under convergence instead of subducting.")]
+        public float initialCrustThicknessKm = 25f;
+        [Tooltip("Uniform mode: starting geological age, Myr.")]
         public float initialCrustAgeMyr = 0f;
+        [Tooltip("Uniform mode: +- random thickness per vertex, km. Subtle seed for where differentiation starts; no large-scale pattern.")]
+        [Range(0f, 5f)] public float initialThicknessVariationKm = 0.5f;
+        [Tooltip("Seeded mode only.")]
+        [Range(0.05f, 0.7f)] public float continentCoverage = 0.3f;
+        [Tooltip("Seeded mode only.")]
+        [Range(0.3f, 4f)] public float continentNoiseScale = 1.3f;
+        [Tooltip("Mature oceanic crust thickness, km (floor for thinning, thickness of new ridge crust).")]
+        public float oceanThicknessKm = 7f;
+        [Tooltip("Normal continental thickness, km (crust fraction 1).")]
+        public float continentThicknessKm = 35f;
+
+        [Header("Planetary Cooling")]
+        [Tooltip("Global thermal age G(t) = max * (1 - exp(-t / timescale)), t = absolute simulated time. " +
+                 "Thermal age = geological age + G. Off: thermal age = geological age.")]
+        public bool enablePlanetaryCooling = true;
+        [Tooltip("Myr. Time for the planet to get ~63% of the way to its final cooling state.")]
+        public float planetaryCoolingTimescaleMyr = 1500f;
+        [Tooltip("Myr. Thermal age that brand-new crust approaches on a fully cooled planet.")]
+        public float maxGlobalThermalAgeMyr = 1000f;
+        [Tooltip("Myr. Thermal age at which crust is half as strong as it can get: strength = T / (T + ref). " +
+                 "Drives the Thermal view, stiffness, the compression barrier and extension resistance.")]
+        public float thermalStrengthRefMyr = 400f;
 
         [Header("Time")]
         public float totalTimeMyr = 4000f;
@@ -64,6 +88,10 @@ namespace PlanetGen.Tectonics.MeshSim
         [Range(1.2f, 2.5f)] public float maxEdgeLength = 1.6f;
         [Tooltip("Edges shorter than this are collapsed (subducted or merged).")]
         [Range(0.2f, 0.8f)] public float minEdgeLength = 0.45f;
+        [Tooltip("Converging edges between buoyant crust (that can't subduct) merge below this length when the crust is hot, " +
+                 "so resisted compression thickens it instead of packing the mesh. Cools toward minEdgeLength with thermal " +
+                 "strength, so cold crust is held by the compression barrier instead. Must stay below maxEdgeLength / 2.")]
+        [Range(0.3f, 0.79f)] public float compressionMergeLength = 0.7f;
         [Tooltip("A vertex this close to its opposite edge is treated as colliding with it.")]
         [Range(0.05f, 0.5f)] public float sliverAltitude = 0.2f;
         [Tooltip("Tangential smoothing per step. Moves mesh vertices without moving crust, which slowly transports material " +
@@ -86,14 +114,40 @@ namespace PlanetGen.Tectonics.MeshSim
         [Range(0f, 1f)] public float gravityLock = 1f;
         public float gravityLockMarginKm = 8f;
 
+        [Header("Extension Resistance & Damage")]
+        [Tooltip("Off: crust offers no resistance to being stretched and continental rifts use the old opening rule.")]
+        public bool enableExtensionResistance = true;
+        [Tooltip("Max fraction (0..1) of relative opening that intact, cold, thick crust removes per constraint pass.")]
+        [Range(0f, 1f)] public float extensionStiffness = 0.9f;
+        [Tooltip("Intact resistance = stiffness * (1 - exp(-s * (ageFactor + thicknessFactor * cf))), s = thermal strength 0..1.")]
+        public float extensionAgeFactor = 1.5f;
+        [Tooltip("See extensionAgeFactor. cf = crust fraction (0 oceanic, 1 continental).")]
+        public float extensionThicknessFactor = 2.5f;
+        [Tooltip("Base tension (attempted opening strain rate of the mantle drive, in velocityReference per radian) for damage. " +
+                 "Effective yield = yield * (0.25 + x * (1 - damage)), x = the strength exponent above.")]
+        public float extensionYield = 0.2f;
+        [Tooltip("Damage per Myr per unit of tension above yield.")]
+        public float extensionDamageRate = 0.02f;
+        [Tooltip("1/Myr. Exponential healing of damage while tension is below yield.")]
+        public float extensionDamageHealing = 0.003f;
+        [Tooltip("Fraction of opening removed by fully damaged crust (0 = fractured crust separates freely).")]
+        [Range(0f, 1f)] public float fracturedCrustResistance = 0.05f;
+        [Tooltip("Damage at which stretched continental edges are split as new rift crust instead of being refined.")]
+        [Range(0.05f, 1f)] public float riftDamageThreshold = 0.5f;
+
         [Header("Convection")]
         public float convectionStrength = 0.003f;
         [Range(0.5f, 3f)] public float convectionRadiusScale = 1.3f;
         [Range(0.3f, 1.5f)] public float plumeThreshold = 0.7f;
         [Range(0.05f, 1f)] public float plumeRadius = 0.3f;
-        public float convectionDrift = 0.0004f;
-        public float temperatureNoise = 0.01f;
-        public float insulationHeat = 0.004f;
+        [Tooltip("Rad/Myr that cells migrate toward the trenches / continents that feed them.")]
+        public float convectionDrift = 0.0002f;
+        [Tooltip("Random walk of each cell's base temperature, per sqrt(Myr). Keep small next to the feedback terms.")]
+        public float temperatureNoise = 0.005f;
+        [Tooltip("Feedback heating per Myr at full continental (area) coverage of a cell.")]
+        public float insulationHeat = 0.012f;
+        [Tooltip("Feedback cooling per Myr of exposed (non-continental) area, scaled by (temp + 1) / 2 so hot cells cool fastest.")]
+        public float surfaceCooling = 0.008f;
         public float subductionCool = 0.5f;
         public float feedbackRelaxPerMyr = 0.005f;
 
@@ -105,6 +159,10 @@ namespace PlanetGen.Tectonics.MeshSim
         [Tooltip("Extra one-ring velocity averaging passes per step for continental crust (rounded up to even). " +
                  "More = more rigid continents but slower plates and some crust loss over long runs. 0 conserves crust best.")]
         [Range(0, 16)] public int plateRigidityPasses = 0;
+        [Tooltip("Jacobi passes per step for the compression and extension limits (rounded up to even). A vertex limited " +
+                 "from several directions at once leaks part of the motion each pass, so more passes = harder limits. " +
+                 "Each pass is one parallel one-ring traversal.")]
+        [Range(2, 16)] public int constraintPasses = 6;
         public float slabPull = 0.002f;
 
         [Header("Subduction")]
@@ -144,6 +202,8 @@ namespace PlanetGen.Tectonics.MeshSim
         public bool validateEveryBatch = false;
         [Tooltip("Seconds of flash in the TopologyEvents view, in simulated Myr.")]
         public float eventFlashMyr = 20f;
+        [Tooltip("Recompute the area-weighted diagnostics every N completed batches (they are not needed by the simulation).")]
+        [Range(1, 100)] public int diagnosticsInterval = 10;
 
         // ---- results ----
         public PlanetPoint[] Points { get; private set; } = Array.Empty<PlanetPoint>();
@@ -177,13 +237,17 @@ namespace PlanetGen.Tectonics.MeshSim
         public float CollapsesPerMyr { get; private set; }
         public float FlipsPerMyr { get; private set; }
         public string LastValidation { get; private set; } = "";
+        /// <summary>Area-weighted diagnostics, refreshed every diagnosticsInterval batches.</summary>
+        public MeshDiagnostics Diagnostics { get; private set; }
+        public int ContinentalSubducted { get; private set; }
+        public float GlobalThermalAgeMyr => MeshStep.GlobalThermalAge(CurrentTimeMyr, enablePlanetaryCooling, planetaryCoolingTimescaleMyr, maxGlobalThermalAgeMyr);
 
         // ---- simulation state ----
         SphereMeshState _state;
         MeshParams _M;
         JobHandle _handle;
         bool _jobsInFlight, _previewPending, _playing, _finishPending, _previewDirty;
-        int _stepIndex, _batchesSinceSnapshot;
+        int _stepIndex, _batchesSinceSnapshot, _batchesSinceDiag;
         float _accum, _lastTick, _stepBudget = 1f;
         int _batchSteps, _rateSteps; float _rateTime;
         int _rateSplits0, _rateCollapses0, _rateFlips0, _rateStep0;
@@ -442,8 +506,15 @@ namespace PlanetGen.Tectonics.MeshSim
             }
             _state.Load(verts, tris);
 
+            _stepIndex = 0;
             _M = BuildParams();
-            InitCrust(_state, _M.P, nv, ref rng);
+            var init = new CrustInit
+            {
+                uniform = uniformInitialCrust, initialThickness = initialCrustThicknessKm, initialAge = initialCrustAgeMyr,
+                variation = initialThicknessVariationKm, coverage = continentCoverage, noiseScale = continentNoiseScale,
+                convEvenness = convectionEvenness
+            };
+            MeshStep.InitCrust(_state, _M, nv, ref rng, init);
 
             // first topology pass: jitter makes the geodesic mesh non-Delaunay, so this mostly flips
             RunTopologyNow();
@@ -456,6 +527,8 @@ namespace PlanetGen.Tectonics.MeshSim
             SplitsPerMyr = CollapsesPerMyr = FlipsPerMyr = 0f;
             _batchSteps = 0; _playing = false; _finishPending = false;
             ReadCounters();
+            Diagnostics = MeshDiagnostics.Compute(_state, _M, planetRadiusKm);
+            _batchesSinceDiag = 0;
             ConvectionPoints = _state.conv.ToArray();
             _live = new PlanetPoint[vCap];
             FillSnapshot();
@@ -500,6 +573,7 @@ namespace PlanetGen.Tectonics.MeshSim
             {
                 P = P,
                 L = _L, Lmin = lo * _L, Lmax = maxEdgeLength * _L,
+                Lmerge = Mathf.Clamp(compressionMergeLength, lo, maxEdgeLength * 0.49f) * _L,
                 sliverH = sliverAltitude * _L,
                 minOrient = 1e-3f * _L * _L,
                 flipEps = Mathf.Max(1e-3f * _L * _L, 2e-7f),
@@ -510,73 +584,23 @@ namespace PlanetGen.Tectonics.MeshSim
                 relax = relaxation,
                 flashDecay = Mathf.Max(0.1f, eventFlashMyr),
                 spreading = gravitySpreading,
+
+                globalThermal = GlobalThermalAgeMyr,
+                thermalRef = Mathf.Max(1f, thermalStrengthRefMyr),
+
+                extEnabled = enableExtensionResistance,
+                extMax = extensionStiffness, extAge = extensionAgeFactor, extThick = extensionThicknessFactor,
+                extYield = extensionYield, extRate = extensionDamageRate, extHeal = extensionDamageHealing,
+                extFractured = fracturedCrustResistance, riftDamage = riftDamageThreshold,
+
+                surfaceCool = surfaceCooling,
             };
         }
 
         void RefreshTunables() { _M = BuildParams(); }
 
-        void InitCrust(SphereMeshState s, in TectonicParams P, int M, ref Unity.Mathematics.Random rng)
-        {
-            int N = s.ConvCount;
-            for (int k = 0; k < N; k++)
-            {
-                float3 best = rng.NextFloat3Direction();
-                float bestScore = float.MaxValue;
-                for (int c = 0; c < convectionEvenness; c++)
-                {
-                    float3 cand = rng.NextFloat3Direction();
-                    float maxDot = -1f;
-                    for (int q = 0; q < k; q++) maxDot = math.max(maxDot, math.dot(cand, s.conv[q].pos));
-                    if (maxDot < bestScore) { bestScore = maxDot; best = cand; }
-                }
-                float t = (rng.NextBool() ? 1f : -1f) * rng.NextFloat(0.3f, 1f);
-                s.conv[k] = new Convection { pos = best, temp = t, baseTemp = t, feedback = 0f };
-            }
-
-            var noiseVals = new float[M];
-            float3 offset = rng.NextFloat3(-100f, 100f);
-            for (int i = 0; i < M; i++)
-            {
-                float3 p = s.pos[i];
-                float n = 0f, a = 1f, f = continentNoiseScale, norm = 0f;
-                for (int o = 0; o < 4; o++) { n += a * noise.snoise(p * f + offset); norm += a; a *= 0.5f; f *= 2.1f; }
-                noiseVals[i] = n / norm;
-            }
-            var sorted = (float[])noiseVals.Clone();
-            Array.Sort(sorted);
-            float thr = sorted[Mathf.Clamp((int)((1f - continentCoverage) * M), 0, M - 1)];
-
-            for (int i = 0; i < M; i++)
-            {
-                float t = initialCrustThicknessKm;
-                float age = initialCrustAgeMyr;
-                s.thickness[i] = t; s.age[i] = age;
-                s.density[i] = TMath.Density(t, age, P);
-                s.stiffness[i] = TMath.Stiffness(t, age, 0f, P);
-                s.posTmp[i] = s.pos[i];
-                s.faultDir[i] = math.normalizesafe(math.cross(s.pos[i], new float3(0, 1, 0)), new float3(1, 0, 0));
-            }
-        }
-
         // ================================================================== job scheduling
-        MeshTopologyJob TopologyJob(bool relax)
-        {
-            var s = _state;
-            return new MeshTopologyJob
-            {
-                M = _M, applyRelax = relax, flipPasses = 4, splitPasses = 4,
-                V = s.V, O = s.O, vc = s.vc, freeV = s.freeV, freeT = s.freeT, counters = s.counters,
-                nearest = s.nearest, consumedCell = s.consumedCell,
-                triAlive = s.triAlive, alive = s.alive, faultType = s.faultType,
-                pos = s.pos, posTmp = s.posTmp, vel = s.vel, velNext = s.velNext, faultDir = s.faultDir, slab = s.slab,
-                consumedPos = s.consumedPos,
-                thickness = s.thickness, age = s.age, density = s.density, stiffness = s.stiffness,
-                orogeny = s.orogeny, extension = s.extension, arc = s.arc, shear = s.shear, hotspot = s.hotspot,
-                faultActivity = s.faultActivity, flashSplit = s.flashSplit, flashCollapse = s.flashCollapse, stats = s.stats
-            };
-        }
-
-        void RunTopologyNow() { TopologyJob(false).Run(); }
+        void RunTopologyNow() { MeshStep.Topology(_state, _M, false).Run(); }
 
         JobHandle ScheduleSteps(int count, JobHandle dependency)
         {
@@ -587,63 +611,25 @@ namespace PlanetGen.Tectonics.MeshSim
             bool relax = M.relax > 0f;
             JobHandle h = dependency;
 
+            int passes = MeshStep.CouplePasses(constraintPasses, plateRigidityPasses);
+
             for (int k = 0; k < count; k++)
             {
                 uint step = (uint)(_stepIndex + k);
+                // global cooling is evaluated per step from absolute time, so batch size never changes it
+                var Mk = M;
+                Mk.globalThermal = MeshStep.GlobalThermalAge(step * dt, enablePlanetaryCooling, planetaryCoolingTimescaleMyr, maxGlobalThermalAgeMyr);
 
-                h = new ConvectionDriveJob
-                {
-                    P = M.P, dt = dt, conv = s.conv, alive = s.alive, pos = s.pos, slab = s.slab,
-                    density = s.density, age = s.age, driven = s.driven, nearest = s.nearest, hotspot = s.hotspot
-                }.Schedule(cap, 256, h);
-
-                h = new MeshVelocityJob
-                {
-                    M = M, dt = dt, V = s.V, O = s.O, vc = s.vc, alive = s.alive,
-                    pos = s.pos, vel = s.vel, driven = s.driven,
-                    thickness = s.thickness, density = s.density, stiffness = s.stiffness, age = s.age,
-                    velNext = s.velNext, compAxis = s.compAxis, slab = s.slab,
-                    rClose = s.rClose, rOpen = s.rOpen, rShear = s.rShear, rSub = s.rSub, rOver = s.rOver,
-                    rCrumple = s.rCrumple, areaOld = s.areaOld, areaMask = s.areaMask
-                }.Schedule(cap, 128, h);
-
-                int passes = (plateRigidityPasses + 1) / 2 * 2;
+                h = MeshStep.Drive(s, Mk, dt).Schedule(cap, 256, h);
+                h = MeshStep.Velocity(s, Mk, dt).Schedule(cap, 128, h);
                 for (int pIdx = 0; pIdx < passes; pIdx++)
-                {
-                    bool ping = (pIdx & 1) == 0;
-                    h = new MeshCoupleJob
-                    {
-                        M = M, V = s.V, O = s.O, vc = s.vc, alive = s.alive, pos = s.pos,
-                        velIn = ping ? s.velNext : s.velTmp, velOut = ping ? s.velTmp : s.velNext,
-                        thickness = s.thickness, density = s.density, stiffness = s.stiffness, age = s.age
-                    }.Schedule(cap, 256, h);
-                }
-
-                h = new MeshMoveJob { dt = dt, alive = s.alive, velNext = s.velNext, pos = s.pos, vel = s.vel }.Schedule(cap, 256, h);
-
-                h = new MeshIntegrateJob
-                {
-                    M = M, dt = dt, V = s.V, O = s.O, vc = s.vc, alive = s.alive, pos = s.pos, compAxis = s.compAxis,
-                    areaOld = s.areaOld, areaMask = s.areaMask, rClose = s.rClose, rOpen = s.rOpen, rShear = s.rShear, rSub = s.rSub,
-                    rOver = s.rOver, rCrumple = s.rCrumple,
-                    thickness = s.thickness, age = s.age, density = s.density, stiffness = s.stiffness,
-                    orogeny = s.orogeny, extension = s.extension, arc = s.arc, shear = s.shear,
-                    faultActivity = s.faultActivity, flashSplit = s.flashSplit, flashCollapse = s.flashCollapse,
-                    faultType = s.faultType, faultDir = s.faultDir
-                }.Schedule(cap, 256, h);
-
-                if (relax)
-                    h = new MeshRelaxJob { relax = M.relax, V = s.V, O = s.O, vc = s.vc, alive = s.alive, pos = s.pos, posTmp = s.posTmp }
-                        .Schedule(cap, 256, h);
-
-                h = TopologyJob(relax).Schedule(h);
-
-                h = new MeshFeedbackJob
-                {
-                    P = M.P, dt = dt, step = step, conv = s.conv, alive = s.alive, pos = s.pos, thickness = s.thickness,
-                    nearest = s.nearest, consumedCell = s.consumedCell, consumedPos = s.consumedPos, counters = s.counters,
-                    sumCont = s.convSumCont, sumSub = s.convSumSub, total = s.convTotal, contCnt = s.convCont, subCnt = s.convSub
-                }.Schedule(h);
+                    h = MeshStep.Couple(s, Mk, pIdx, plateRigidityPasses).Schedule(cap, 256, h);
+                h = MeshStep.Area(s, Mk).Schedule(cap, 256, h);
+                h = MeshStep.Move(s, Mk, dt).Schedule(cap, 256, h);
+                h = MeshStep.Integrate(s, Mk, dt).Schedule(cap, 256, h);
+                if (relax) h = MeshStep.Relax(s, Mk).Schedule(cap, 256, h);
+                h = MeshStep.Topology(s, Mk, relax).Schedule(h);
+                h = MeshStep.Feedback(s, Mk, dt, step).Schedule(h);
             }
             return h;
         }
@@ -660,6 +646,7 @@ namespace PlanetGen.Tectonics.MeshSim
                 V = s.V, O = s.O, vc = s.vc, alive = s.alive, faultType = s.faultType, pos = s.pos, vel = s.vel,
                 thickness = s.thickness, age = s.age, faultActivity = s.faultActivity, orogeny = s.orogeny,
                 hotspot = s.hotspot, flashSplit = s.flashSplit, flashCollapse = s.flashCollapse,
+                damage = s.damage, tension = s.tension,
                 verts = _verts, colors = _colors
             }.Schedule(s.VCap + 1, 512, dependency);
             var ij = new MeshPreviewIndexJob
@@ -695,6 +682,7 @@ namespace PlanetGen.Tectonics.MeshSim
             TotalSplits = c[MeshTopo.Splits]; TotalCollapses = c[MeshTopo.Collapses]; TotalFlips = c[MeshTopo.Flips];
             TotalSubducted = c[MeshTopo.Subducted]; TotalRifts = c[MeshTopo.Rifts];
             InvertedTriangles = c[MeshTopo.Inverted]; CapacityHits = c[MeshTopo.CapHits];
+            ContinentalSubducted = c[MeshTopo.ContinentalSubducted];
             MinEdgeRatio = _state.stats[0]; MaxEdgeRatio = _state.stats[1];
 
             int ds = _stepIndex - _rateStep0;
@@ -733,6 +721,11 @@ namespace PlanetGen.Tectonics.MeshSim
             {
                 ReadCounters();
                 ConvectionPoints = _state.conv.ToArray();
+                if (++_batchesSinceDiag >= diagnosticsInterval)
+                {
+                    _batchesSinceDiag = 0;
+                    Diagnostics = MeshDiagnostics.Compute(_state, _M, planetRadiusKm);
+                }
                 if (drawGizmos && drawFaultDirections && ++_batchesSinceSnapshot >= gizmoSnapshotInterval)
                 {
                     _batchesSinceSnapshot = 0;

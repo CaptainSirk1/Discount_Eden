@@ -8,9 +8,10 @@ namespace PlanetGen.Tectonics.MeshSim
     // ---------------------------------------------------------------------------------
     // Step pipeline (chained, never completed mid-simulation):
     //   ConvectionDrive (reused from the point sim)
-    //   -> MeshVelocity   (one-ring: plate coupling, compression barrier, gravity lock, spreading, boundary rates)
-    //   -> MeshCouple x N (optional extra continental rigidity, compression limit re-applied each pass)
-    //   -> MeshMove       (advect)
+    //   -> MeshVelocity   (one-ring: target velocity = drive blended with neighbours; spreading; boundary rates)
+    //   -> MeshCouple x N (>= 2: optional rigidity averaging, compression + extension limits, tension on pass 0)
+    //   -> MeshArea       (dual areas + one-crust triangle mask, using the final velocities)
+    //   -> MeshMove       (velocity relaxes toward the limited target with inertia, then advect)
     //   -> MeshIntegrate  (one-ring area change -> thickness, accumulators, fault classification)
     //   -> MeshRelax      (optional tangential smoothing, written to posTmp)
     //   -> MeshTopology   (single-threaded: repair, flip, vertex/edge collisions, collapse, split, flip)
@@ -29,21 +30,8 @@ namespace PlanetGen.Tectonics.MeshSim
         [ReadOnly] public NativeArray<float3> pos, vel, driven;
         [ReadOnly] public NativeArray<float> thickness, density, stiffness, age;
 
-        [WriteOnly] public NativeArray<float3> velNext, compAxis, slab;
-        [WriteOnly] public NativeArray<float> rClose, rOpen, rShear, rSub, rOver, rCrumple, areaOld;
-        [WriteOnly] public NativeArray<uint> areaMask;
-
-        bool Boundary(int a, int b) => MeshLimits.Boundary(thickness[a], density[a], thickness[b], density[b], M);
-
-        /// <summary>Area across this pair is not compression/extension of one crust: either it's a crust boundary,
-        /// or the pair is converging and can subduct (that area is being consumed).</summary>
-        bool Excluded(int a, int b)
-        {
-            if (Boundary(a, b)) return true;
-            if (!MeshLimits.Subducts(thickness[a], density[a], thickness[b], density[b], M)) return false;
-            float3 d = math.normalizesafe(pos[b] - pos[a]);
-            return math.dot(vel[b] - vel[a], d) < -M.P.closeThreshold;
-        }
+        [WriteOnly] public NativeArray<float3> velNext, compAxis, slab, spreadVel;
+        [WriteOnly] public NativeArray<float> rClose, rOpen, rShear, rSub, rOver, rCrumple;
 
         public void Execute(int i)
         {
@@ -58,30 +46,16 @@ namespace PlanetGen.Tectonics.MeshSim
             float closeSum = 0f, openSum = 0f, shearSum = 0f, subSum = 0f, overSum = 0f, crumpleSum = 0f;
             int subN = 0, count = 0;
             float3 slabF = float3.zero, axis = float3.zero;
-            float bestAbs = 0f, area = 0f;
-            uint mask = 0u;
+            float bestAbs = 0f;
             float3 spread = float3.zero;
             float excessI = math.max(ti - P.contThick, 0f);
-
-            // compression constraints, applied after the new velocity is known: (dir, vel_j . dir), amount
-            var lockDir = new FixedList512Bytes<float4>();
-            var lockAmt = new FixedList128Bytes<float>();
 
             int c0 = vc[i], c = c0, guard = 0;
             do
             {
-                int j = V[MeshTopo.Next(c)], jn = V[MeshTopo.Prev(c)];
+                int j = V[MeshTopo.Next(c)];
                 float3 pj = pos[j];
-                // Only triangles inside one crust count toward this vertex's area. Area lost across a crust
-                // boundary or a converging subduction pair is consumed crust and must not thicken anything.
-                if (guard < 32 && !Excluded(i, j) && !Excluded(i, jn) && !Excluded(j, jn))
-                {
-                    area += 0.5f * math.length(math.cross(pj - pi, pos[jn] - pi));
-                    mask |= 1u << guard;
-                }
-
                 float3 delta = pj - pi;
-                float d = math.length(delta);
                 float3 dir = math.normalizesafe(delta - pi * math.dot(delta, pi));
                 count++;
 
@@ -102,7 +76,7 @@ namespace PlanetGen.Tectonics.MeshSim
                 closeSum += closing; openSum += opening; shearSum += math.length(shearV);
                 if (math.abs(along) > bestAbs) { bestAbs = math.abs(along); axis = dir; }
 
-                // --- subduction: thickness OR density contrast, the denser side goes under ---
+                // --- subduction: the denser side goes under ---
                 bool iSub = subduct && (di > dj || (di == dj && ai > age[j]));
                 // --- gravitational spreading: over-thick crust flows toward thinner neighbours (volume-conserving) ---
                 if (!subduct) spread += dir * (excessI - math.max(tj - P.contThick, 0f));
@@ -117,40 +91,20 @@ namespace PlanetGen.Tectonics.MeshSim
                     else crumpleSum += closing;
                 }
 
-                // --- compression limit (subducting pairs are exempt: they slide under and get consumed) ---
-                if (!subduct && lockDir.Length < 30)
-                {
-                    float lockA = MeshLimits.Lock(d, ti, tj, ai, age[j], M);
-                    if (lockA > 1e-4f)
-                    {
-                        float share = sj / (si + sj + 1e-5f);   // the softer side yields more
-                        lockDir.Add(new float4(dir, math.dot(vel[j], dir)));
-                        lockAmt.Add(lockA * share);
-                    }
-                }
-
                 c = MeshTopo.Next(O[MeshTopo.Next(c)]);
             } while (c != c0 && ++guard < MeshTopo.MaxRing);
 
-            // --- velocity: convective drive blended toward the neighbourhood, with inertia ---
+            // --- target velocity: convective drive blended toward the neighbourhood ---
+            // MeshCoupleJob then applies the compression and extension limits to this TARGET field (relative to the
+            // neighbours' targets, so coherent motion is free), and MeshMoveJob relaxes the actual velocity toward
+            // the limited target with inertia. Limiting the target rather than the per-step velocity keeps every
+            // limit's meaning ("fraction of relative motion removed") independent of the timestep.
             float3 coupled = coupledSum / wSum;
             float cpl = math.saturate(P.couple * si);
             float3 target = math.lerp(driven[i], coupled, cpl);
-            float resp = 1f - math.exp(-dt / P.velTau);
-            float3 vNew = math.lerp(vi, target, resp);
-            if (count > 0) vNew += spread * (M.spreading / count);
-
-            for (int k = 0; k < lockDir.Length; k++)
-            {
-                float4 e = lockDir[k];
-                float relClose = math.dot(vNew, e.xyz) - e.w;   // > 0: moving toward j
-                if (relClose > 0f) vNew -= e.xyz * (relClose * lockAmt[k]);
-            }
-
-            vNew -= pi * math.dot(vNew, pi);
-            float sp = math.length(vNew);
-            if (sp > P.maxSpeed) vNew *= P.maxSpeed / sp;
-            velNext[i] = vNew;
+            target -= pi * math.dot(target, pi);
+            velNext[i] = target;
+            spreadVel[i] = count > 0 ? spread * (M.spreading / count) : float3.zero;
 
             float inv = count > 0 ? 1f / count : 0f;
             float vr = 1f / P.velRef;
@@ -162,66 +116,138 @@ namespace PlanetGen.Tectonics.MeshSim
             rSub[i] = subN > 0 ? subSum / subN * vr : 0f;
             compAxis[i] = axis;
             slab[i] = slabF;
-            areaOld[i] = area / 3f;
-            areaMask[i] = mask;
         }
     }
 
-    /// <summary>Extra rigidity for continental crust: one Jacobi pass of stiffness-weighted velocity averaging over the one-ring,
-    /// followed by the compression limit so averaging can't push crust past it.
-    /// Run a few times per step (ping-pong) so stiff plates move as units instead of deforming internally.
-    /// Pairs that can subduct are only weakly coupled, which keeps plate boundaries sharp.</summary>
+    /// <summary>
+    /// Dual area of every vertex before it moves, with the FINAL velocities of this step known:
+    ///   areaFull = 1/3 of all incident triangles (diagnostics, feedback weighting)
+    ///   areaOld  = 1/3 of the incident triangles that lie inside one crust (areaMask marks them)
+    /// A triangle is left out if any pair in it is a crust boundary or is converging and can subduct: area lost
+    /// there is consumed crust and must not thicken anything. MeshIntegrateJob measures the same subset after the
+    /// move, and the ratio is the volume-conserving thickness change.
+    /// </summary>
     [BurstCompile]
-    public struct MeshCoupleJob : IJobParallelFor
+    public struct MeshAreaJob : IJobParallelFor
     {
         public MeshParams M;
         [ReadOnly] public NativeArray<int> V, O, vc;
         [ReadOnly] public NativeArray<byte> alive;
-        [ReadOnly] public NativeArray<float3> pos, velIn;
-        [ReadOnly] public NativeArray<float> thickness, density, stiffness, age;
-        [WriteOnly] public NativeArray<float3> velOut;
+        [ReadOnly] public NativeArray<float3> pos, velNext;
+        [ReadOnly] public NativeArray<float> thickness, density;
+        [WriteOnly] public NativeArray<float> areaOld, areaFull;
+        [WriteOnly] public NativeArray<uint> areaMask;
+
+        bool Excluded(int a, int b)
+        {
+            if (MeshLimits.Boundary(thickness[a], density[a], thickness[b], density[b], M)) return true;
+            if (!MeshLimits.Subducts(thickness[a], density[a], thickness[b], density[b], M)) return false;
+            float3 d = math.normalizesafe(pos[b] - pos[a]);
+            return math.dot(velNext[b] - velNext[a], d) < 0f;
+        }
 
         public void Execute(int i)
         {
             if (alive[i] == 0) return;
-            float si = stiffness[i], ti = thickness[i], di = density[i];
-            float3 vi = velIn[i], pi = pos[i];
-            float3 sum = vi * si; float w = si + 1e-4f;
-            int c0 = vc[i], c = c0, n = 0;
+            float3 pi = pos[i];
+            float area = 0f, areaAll = 0f;
+            uint mask = 0u;
+            int c0 = vc[i], c = c0, guard = 0;
             do
             {
-                int j = V[MeshTopo.Next(c)];
-                float wj = stiffness[j] * (MeshLimits.Boundary(ti, di, thickness[j], density[j], M) ? 0.1f : 1f);
-                sum += velIn[j] * wj; w += wj;
+                int j = V[MeshTopo.Next(c)], jn = V[MeshTopo.Prev(c)];
+                float triArea = 0.5f * math.length(math.cross(pos[j] - pi, pos[jn] - pi));
+                areaAll += triArea;
+                if (guard < 32 && !Excluded(i, j) && !Excluded(i, jn) && !Excluded(j, jn))
+                {
+                    area += triArea;
+                    mask |= 1u << guard;
+                }
                 c = MeshTopo.Next(O[MeshTopo.Next(c)]);
-            } while (c != c0 && ++n < MeshTopo.MaxRing);
-            // extra rigidity is for continents: repeated averaging of the (divergent) mantle drive would
-            // otherwise cancel most oceanic motion
-            float cf = TMath.CrustFrac(ti, M.P);
-            float3 v = math.lerp(vi, sum / w, math.saturate(M.P.couple * si) * cf);
+            } while (c != c0 && ++guard < MeshTopo.MaxRing);
+            areaOld[i] = area / 3f;
+            areaFull[i] = areaAll / 3f;
+            areaMask[i] = mask;
+        }
+    }
 
-            // compression limit against the neighbours' current velocities
+    /// <summary>
+    /// One Jacobi pass of the crust's mechanical constraints, run at least twice per step (ping-pong velNext/velTmp):
+    ///   1. optional stiffness-weighted velocity averaging (continental rigidity, plateRigidityPasses)
+    ///   2. compression limit: removes part of the closing motion toward each non-subducting neighbour
+    ///   3. extension limit: removes part of the opening motion away from each same-crust neighbour
+    /// Both limits act on velocity RELATIVE to the neighbour's current velocity, so coherent motion is free.
+    /// The first pass also measures tension: how fast the mantle drive is trying to pull this vertex away from its
+    /// neighbours (strain rate of the convective drive, before coupling or any limit). That is what the crust
+    /// resists, so a strong barrier can't hide the stress that will eventually break it.
+    /// </summary>
+    [BurstCompile]
+    public struct MeshCoupleJob : IJobParallelFor
+    {
+        public MeshParams M;
+        public bool average, measure;
+        [ReadOnly] public NativeArray<int> V, O, vc;
+        [ReadOnly] public NativeArray<byte> alive;
+        [ReadOnly] public NativeArray<float3> pos, velIn, driven;
+        [ReadOnly] public NativeArray<float> thickness, density, stiffness, age, damage;
+        [WriteOnly] public NativeArray<float3> velOut;
+        [WriteOnly] public NativeArray<float> tension;
+
+        public void Execute(int i)
+        {
+            if (alive[i] == 0) return;
+            float si = stiffness[i], ti = thickness[i], di = density[i], ai = age[i], Di = damage[i];
+            float3 vi = velIn[i], pi = pos[i];
+            float3 v = vi;
+            int c0 = vc[i], c = c0, n = 0;
+
+            if (average)
+            {
+                float3 sum = vi * si; float w = si + 1e-4f;
+                do
+                {
+                    int j = V[MeshTopo.Next(c)];
+                    float wj = stiffness[j] * (MeshLimits.Boundary(ti, di, thickness[j], density[j], M) ? 0.1f : 1f);
+                    sum += velIn[j] * wj; w += wj;
+                    c = MeshTopo.Next(O[MeshTopo.Next(c)]);
+                } while (c != c0 && ++n < MeshTopo.MaxRing);
+                // extra rigidity is for continents: repeated averaging of the (divergent) mantle drive would
+                // otherwise cancel most oceanic motion
+                float cf = TMath.CrustFrac(ti, M.P);
+                v = math.lerp(vi, sum / w, math.saturate(M.P.couple * si) * cf);
+            }
+
+            float maxTension = 0f;
+            float3 di3 = driven[i];
             c = c0; n = 0;
             do
             {
                 int j = V[MeshTopo.Next(c)];
-                float tj = thickness[j];
-                if (!MeshLimits.Subducts(ti, di, tj, density[j], M))
+                float tj = thickness[j], dj = density[j], sj = stiffness[j];
+                float3 delta = pos[j] - pi;
+                float d = math.length(delta);
+                float3 dir = math.normalizesafe(delta - pi * math.dot(delta, pi));
+                bool boundary = MeshLimits.Boundary(ti, di, tj, dj, M);
+                float share = sj / (si + sj + 1e-5f);   // the softer side yields more
+
+                if (measure && !boundary && d > 1e-7f)
+                    maxTension = math.max(maxTension, math.dot(driven[j] - di3, dir) / d / M.P.velRef);
+
+                float rel = math.dot(v - velIn[j], dir);   // > 0: closing, < 0: opening
+                if (rel > 0f)
                 {
-                    float3 delta = pos[j] - pi;
-                    float d = math.length(delta);
-                    float3 dir = math.normalizesafe(delta - pi * math.dot(delta, pi));
-                    float amt = MeshLimits.Lock(d, ti, tj, age[i], age[j], M) * stiffness[j] / (si + stiffness[j] + 1e-5f);
-                    float relClose = math.dot(v - velIn[j], dir);
-                    if (amt > 0f && relClose > 0f) v -= dir * (relClose * amt);
+                    if (!MeshLimits.Subducts(ti, di, tj, dj, M))
+                        v -= dir * (rel * MeshLimits.CompressionLock(d, ti, tj, ai, age[j], M) * share);
                 }
+                else if (M.extEnabled && !boundary)
+                    v -= dir * (rel * MeshLimits.ExtensionLock(ti, tj, ai, age[j], Di, damage[j], M) * share);
+
                 c = MeshTopo.Next(O[MeshTopo.Next(c)]);
             } while (c != c0 && ++n < MeshTopo.MaxRing);
 
             v -= pi * math.dot(v, pi);
-            float sp = math.length(v);
-            if (sp > M.P.maxSpeed) v *= M.P.maxSpeed / sp;
             velOut[i] = v;
+            if (measure) tension[i] = maxTension;
         }
     }
 
@@ -233,8 +259,8 @@ namespace PlanetGen.Tectonics.MeshSim
             => math.abs(ta - tb) / M.P.subductThickness + math.abs(da - db) / M.P.subductDensity >= 1f;
 
         /// <summary>Can this pair subduct when it converges? Any two oceanic vertices can (the denser goes under),
-        /// and so can a crust boundary whose denser side is oceanic. Buoyant continental crust never goes under
-        /// continental crust: it collides, and the compression limit applies.</summary>
+        /// and so can a crust boundary whose denser side is oceanic. Buoyant crust (cf >= 0.5, e.g. uniform 25 km
+        /// primordial crust) never goes under buoyant crust: it collides and thickens.</summary>
         public static bool Subducts(float ta, float da, float tb, float db, in MeshParams M)
         {
             float cfa = TMath.CrustFrac(ta, M.P), cfb = TMath.CrustFrac(tb, M.P);
@@ -243,36 +269,100 @@ namespace PlanetGen.Tectonics.MeshSim
             return cfDense < 0.5f && Boundary(ta, da, tb, db, M);
         }
 
+        /// <summary>Thermal age = geological age + the planet's global thermal age. Never stored.</summary>
+        public static float ThermalAge(float age, in MeshParams M) => age + M.globalThermal;
+
+        /// <summary>0 = molten-hot, approaches 1 as crust cools. T / (T + ref): no hard saturation, so a
+        /// 2 Gyr craton stays distinguishable from 300 Myr old sea floor.</summary>
+        public static float ThermalStrength(float age, in MeshParams M)
+        {
+            float T = ThermalAge(age, M);
+            return T / (T + M.thermalRef);
+        }
+
+        /// <summary>0..1 coupling stiffness. Thick and cool = stiff. Active faults and damage weaken it.</summary>
+        public static float Stiffness(float thickness, float age, float faultActivity, float damage, in MeshParams M)
+        {
+            float cf = TMath.CrustFrac(thickness, M.P);
+            float s = math.lerp(0.2f, 0.6f, cf) + 0.3f * ThermalStrength(age, M);
+            return math.saturate(s * (1f - 0.5f * math.saturate(math.max(faultActivity, damage))));
+        }
+
         /// <summary>Fraction of closing motion to remove between two non-subducting vertices d apart.
-        /// Exponential barrier (1 - exp(-k x), so resistance ~ exp(k x) - 1), compounded by age, combined
-        /// with the gravity cap (crust that can't thicken any more can't be compressed any more).</summary>
-        public static float Lock(float d, float ta, float tb, float agea, float ageb, in MeshParams M)
+        /// Exponential barrier (1 - exp(-k x), so resistance ~ exp(k x) - 1). Cool crust multiplies k (up to
+        /// 1 + barrierAgeFactor); hot crust keeps a quarter of it, so primordial crust thickens instead of locking.
+        /// Combined with the gravity cap (crust that can't thicken any more can't be compressed any more).</summary>
+        public static float CompressionLock(float d, float ta, float tb, float agea, float ageb, in MeshParams M)
         {
             float lockA = 0f;
             if (d < M.barrierRest)
             {
                 float x = (M.barrierRest - d) / M.barrierRest;
-                float ageF = math.saturate(0.5f * (agea + ageb) / M.P.ageRef);
-                lockA = 1f - math.exp(-M.barrierK * (1f + M.barrierAge * ageF) * x);
+                float s = ThermalStrength(0.5f * (agea + ageb), M);
+                lockA = 1f - math.exp(-M.barrierK * math.lerp(0.25f, 1f + M.barrierAge, s) * x);
             }
             float head = math.max(math.saturate((ta - M.P.lockStart) / M.P.lockMargin), math.saturate((tb - M.P.lockStart) / M.P.lockMargin));
             return math.saturate(math.max(lockA, M.P.lockStrength * head));
         }
+
+        /// <summary>Strength exponent x = s * (ageFactor + thicknessFactor * cf): s = thermal strength 0..1,
+        /// cf = crust fraction. 0 for molten crust, ~4 for a cold craton with the default factors.</summary>
+        public static float StrengthExponent(float thickness, float age, in MeshParams M)
+            => ThermalStrength(age, M) * (M.extAge + M.extThick * TMath.CrustFrac(thickness, M.P));
+
+        /// <summary>Intact extension resistance, 0..extMax: extMax * (1 - exp(-x)). Hot crust barely resists;
+        /// cool thick crust strongly does.</summary>
+        public static float IntactExtension(float ta, float tb, float agea, float ageb, in MeshParams M)
+        {
+            float x = 0.5f * (StrengthExponent(ta, agea, M) + StrengthExponent(tb, ageb, M));
+            return M.extMax * (1f - math.exp(-x));
+        }
+
+        /// <summary>Fraction of opening motion to remove. Damage D (worse of the pair) blends intact resistance
+        /// down to the fractured resistance: S (1 - D) + min(F, S) D.</summary>
+        public static float ExtensionLock(float ta, float tb, float agea, float ageb, float Da, float Db, in MeshParams M)
+        {
+            float S = IntactExtension(ta, tb, agea, ageb, M);
+            float D = math.max(Da, Db);
+            return S * (1f - D) + math.min(M.extFractured, S) * D;
+        }
+
+        /// <summary>Damage after dt. The yield scales with strength and drops as damage grows:
+        ///   yieldEff = yield * (0.25 + x * (1 - D))
+        /// so hot or thin crust breaks easily, cold cratons need far more tension, and a crack that has started
+        /// keeps growing (the positive feedback that concentrates strain). Tension above yieldEff grows D toward 1
+        /// (bounded by the (1 - D) factor); below it, D heals exponentially.</summary>
+        public static float UpdateDamage(float D, float tension, float thickness, float age, float dt, in MeshParams M)
+        {
+            if (!M.extEnabled) return 0f;
+            float yieldEff = M.extYield * (0.25f + StrengthExponent(thickness, age, M) * (1f - D));
+            float excess = tension - yieldEff;
+            if (excess > 0f) D += M.extRate * excess * (1f - D) * dt;
+            else D *= math.exp(-M.extHeal * dt);
+            return math.saturate(D);
+        }
     }
 
+    /// <summary>Velocity relaxes toward the limited target (plus gravitational spreading) over velocityInertiaMyr,
+    /// then the vertex moves along the sphere.</summary>
     [BurstCompile]
     public struct MeshMoveJob : IJobParallelFor
     {
-        public float dt;
+        public float dt, velTau, maxSpeed;
         [ReadOnly] public NativeArray<byte> alive;
-        [ReadOnly] public NativeArray<float3> velNext;
-        public NativeArray<float3> pos, vel;
+        [ReadOnly] public NativeArray<float3> spreadVel;
+        public NativeArray<float3> pos, vel, velNext;
 
         public void Execute(int i)
         {
             if (alive[i] == 0) return;
             float3 p0 = pos[i];
-            float3 v = velNext[i];
+            float resp = 1f - math.exp(-dt / velTau);
+            float3 v = math.lerp(vel[i], velNext[i] + spreadVel[i], resp);
+            v -= p0 * math.dot(v, p0);
+            float sp = math.length(v);
+            if (sp > maxSpeed) v *= maxSpeed / sp;
+            velNext[i] = v;
             float3 disp = v * dt;
             disp -= p0 * math.dot(disp, p0);
             float3 p = math.normalize(p0 + disp);
@@ -292,8 +382,9 @@ namespace PlanetGen.Tectonics.MeshSim
         [ReadOnly] public NativeArray<float3> pos, compAxis;
         [ReadOnly] public NativeArray<float> areaOld, rClose, rOpen, rShear, rSub, rOver, rCrumple;
         [ReadOnly] public NativeArray<uint> areaMask;
+        [ReadOnly] public NativeArray<float> tension;
 
-        public NativeArray<float> thickness, age, density, stiffness, orogeny, extension, arc, shear, faultActivity;
+        public NativeArray<float> thickness, age, density, stiffness, orogeny, extension, arc, shear, faultActivity, damage;
         public NativeArray<float> flashSplit, flashCollapse;
         public NativeArray<byte> faultType;
         public NativeArray<float3> faultDir;
@@ -304,24 +395,27 @@ namespace PlanetGen.Tectonics.MeshSim
             TectonicParams P = M.P;
             float3 pi = pos[i];
 
-            // same triangle subset as MeshVelocityJob (topology has not changed in between)
+            // same triangle subset as MeshAreaJob (topology has not changed in between)
             uint mask = areaMask[i];
-            float area = 0f;
+            float area = 0f, areaAll = 0f;
             int c0 = vc[i], c = c0, guard = 0;
             do
             {
-                if (guard < 32 && (mask & (1u << guard)) != 0u)
-                    area += 0.5f * math.length(math.cross(pos[V[MeshTopo.Next(c)]] - pi, pos[V[MeshTopo.Prev(c)]] - pi));
+                float triArea = 0.5f * math.length(math.cross(pos[V[MeshTopo.Next(c)]] - pi, pos[V[MeshTopo.Prev(c)]] - pi));
+                areaAll += triArea;
+                if (guard < 32 && (mask & (1u << guard)) != 0u) area += triArea;
                 c = MeshTopo.Next(O[MeshTopo.Next(c)]);
             } while (c != c0 && ++guard < MeshTopo.MaxRing);
-            area /= 3f;
+            area /= 3f; areaAll /= 3f;
 
             // --- crust volume is conserved: losing area thickens, gaining area thins ---
-            float ratio = mask == 0u ? 1f : math.clamp(areaOld[i] / math.max(area, 1e-12f), 0.5f, 2f);
+            // Only the in-crust triangles' area change counts, spread over the vertex's whole dual area: at a margin the
+            // boundary triangles keep their thickness (their area change is consumed or created crust, not strain).
+            float ratio = mask == 0u ? 1f : math.clamp(1f + (areaOld[i] - area) / math.max(areaAll, 1e-12f), 0.5f, 2f);
             float t = thickness[i];
             float cf = TMath.CrustFrac(t, P);
-            if (ratio > 1f)
-                t += t * (ratio - 1f) * math.lerp(M.oceanCompress, 1f, cf);   // oceanic crust mostly subducts instead
+            if (ratio > 1f)   // buoyant crust (cf >= 0.5) conserves volume fully; oceanic crust mostly subducts instead
+                t += t * (ratio - 1f) * math.lerp(M.oceanCompress, 1f, math.saturate(cf * 2f));
             else
             {
                 extension[i] = extension[i] + (1f - ratio) * cf;
@@ -362,8 +456,11 @@ namespace PlanetGen.Tectonics.MeshSim
                 if (decayed < P.faultThreshold * 0.25f) faultType[i] = (byte)FaultType.None;
             }
 
+            float D = MeshLimits.UpdateDamage(damage[i], tension[i], t, a, dt, M);
+            damage[i] = D;
+
             density[i] = TMath.Density(t, a, P);
-            stiffness[i] = TMath.Stiffness(t, a, faultActivity[i], P);
+            stiffness[i] = MeshLimits.Stiffness(t, a, faultActivity[i], D, M);
 
             float fd = math.exp(-dt / M.flashDecay);
             flashSplit[i] = flashSplit[i] * fd;
@@ -419,8 +516,8 @@ namespace PlanetGen.Tectonics.MeshSim
         public NativeArray<int> V, O, vc, freeV, freeT, counters, nearest, consumedCell;
         public NativeArray<byte> triAlive, alive, faultType;
         public NativeArray<float3> pos, posTmp, vel, velNext, faultDir, slab, consumedPos;
-        public NativeArray<float> thickness, age, density, stiffness, orogeny, extension, arc, shear, hotspot, faultActivity;
-        public NativeArray<float> flashSplit, flashCollapse, stats;
+        public NativeArray<float> thickness, age, density, stiffness, orogeny, extension, arc, shear, hotspot, faultActivity, damage;
+        public NativeArray<float> flashSplit, flashCollapse, stats, areaFull;
 
         int _splits, _collapses, _flips, _subducted, _capHits, _rifts;
 
@@ -505,11 +602,13 @@ namespace PlanetGen.Tectonics.MeshSim
             }
         }
 
-        /// <summary>4) collapse edges shorter than Lmin</summary>
+        /// <summary>4) collapse edges shorter than Lmin, and converging buoyant edges shorter than Lmerge
+        /// (resisted compression thickens the crust by merging instead of packing the mesh)</summary>
         public void PassCollapse()
         {
             int tCap = triAlive.Length;
             float lmin2 = M.Lmin * M.Lmin;
+            float lmerge2 = M.Lmerge * M.Lmerge;
             for (int t = 0; t < tCap; t++)
             {
                 for (int k = 0; k < 3; k++)
@@ -520,7 +619,8 @@ namespace PlanetGen.Tectonics.MeshSim
                     float l2 = EdgeLen2(c);
                     // a refused collapse is retried without the geometry check once the edge is badly short;
                     // any triangle that inverts is repaired by the repair pass next step
-                    if (l2 < lmin2 && !TryCollapseEdge(c, false) && l2 < 0.25f * lmin2) TryCollapseEdge(c, true);
+                    if (l2 < lmin2) { if (!TryCollapseEdge(c, false) && l2 < 0.25f * lmin2) TryCollapseEdge(c, true); }
+                    else if (l2 < lmerge2 && ConvergingBuoyant(c, l2)) TryCollapseEdge(c, false);
                 }
             }
         }
@@ -647,6 +747,19 @@ namespace PlanetGen.Tectonics.MeshSim
             counters[MeshTopo.AliveT] -= 1;
         }
 
+        /// <summary>Converging buoyant pair short enough to merge. The merge length shrinks from Lmerge (hot crust)
+        /// toward Lmin as the crust cools: hot crust thickens freely, cold crust is held by the compression barrier.</summary>
+        bool ConvergingBuoyant(int c, float l2)
+        {
+            int b = V[MeshTopo.Next(c)], d = V[MeshTopo.Prev(c)];
+            if (CanSubduct(b, d)) return false;
+            float sT = MeshLimits.ThermalStrength(0.5f * (age[b] + age[d]), M);
+            float lm = math.lerp(M.Lmerge, M.Lmin, sT);
+            if (l2 >= lm * lm) return false;
+            float3 axis = math.normalizesafe(pos[d] - pos[b]);
+            return math.dot(vel[d] - vel[b], axis) < -M.P.closeThreshold;
+        }
+
         bool CanSubduct(int a, int b) => MeshLimits.Subducts(thickness[a], density[a], thickness[b], density[b], M);
 
         // ============================================================== flip
@@ -736,13 +849,28 @@ namespace PlanetGen.Tectonics.MeshSim
             return m;
         }
 
-        void InitSplitVertex(int m, int b, int d, float u, float3 pm, bool allowRift)
+        /// <summary>
+        /// New vertex on edge b-d. Two kinds of split:
+        ///   rift split     -> genuinely new crust: age 0, thin, half the parents' damage (hot, still weak)
+        ///   ordinary split -> mesh maintenance: interpolate everything (or copy the denser side across a crust boundary)
+        /// A split is a rift when the edge is opening AND either the crust is oceanic (ridge: fast opening or an
+        /// active divergent fault) or it is continental crust that has been fractured (damage >= riftDamage).
+        /// Intact continental crust that merely stretches is refined, never turned into ocean floor here.
+        /// </summary>
+        bool InitSplitVertex(int m, int b, int d, float u, float3 pm, bool allowRift)
         {
             TectonicParams P = M.P;
             float3 axis = math.normalizesafe(pos[d] - pos[b]);
+            float openRate = math.dot(vel[d] - vel[b], axis);
             bool divergentFault = (faultType[b] == (byte)FaultType.Divergent && faultActivity[b] > P.faultThreshold)
                                || (faultType[d] == (byte)FaultType.Divergent && faultActivity[d] > P.faultThreshold);
-            bool rift = allowRift && (math.dot(vel[d] - vel[b], axis) > M.riftOpen || divergentFault);
+            float cfAvg = 0.5f * (TMath.CrustFrac(thickness[b], P) + TMath.CrustFrac(thickness[d], P));
+            float dMax = math.max(damage[b], damage[d]);
+            bool ridgeLike = openRate > M.riftOpen || divergentFault;
+            bool rift;
+            if (!allowRift) rift = false;
+            else if (cfAvg < 0.5f || !M.extEnabled) rift = ridgeLike;          // oceanic ridges (and the old rule with extension off)
+            else rift = openRate > 0f && dMax >= M.riftDamage;                  // continents only rift once fractured
 
             float3 v = math.lerp(vel[b], vel[d], u);
             v -= pm * math.dot(v, pm);
@@ -762,12 +890,14 @@ namespace PlanetGen.Tectonics.MeshSim
             if (rift)
             {
                 // fresh crust. Thick/stiff surroundings leave transitional crust (failed-rift margins).
+                // Thermal state comes for free: age 0 -> thermal age = the planet's global thermal age.
                 float cf = TMath.CrustFrac(srcT, P);
                 float nt = P.oceanThick + (srcT - P.oceanThick) * (P.riftBlend * cf * srcS);
                 thickness[m] = nt; age[m] = 0f;
                 orogeny[m] = 0f; arc[m] = 0f; shear[m] = 0f; hotspot[m] = 0f;
                 faultType[m] = (byte)FaultType.Divergent;
                 faultActivity[m] = act;
+                damage[m] = 0.5f * dMax;
                 _rifts++;
             }
             else if (MeshLimits.Boundary(thickness[b], density[b], thickness[d], density[d], M))
@@ -780,6 +910,7 @@ namespace PlanetGen.Tectonics.MeshSim
                 orogeny[m] = orogeny[src]; arc[m] = arc[src]; shear[m] = shear[src]; hotspot[m] = hotspot[src];
                 extension[m] = extension[src];
                 faultActivity[m] = faultActivity[src]; faultType[m] = faultType[src];
+                damage[m] = damage[src];
             }
             else
             {
@@ -792,9 +923,11 @@ namespace PlanetGen.Tectonics.MeshSim
                 hotspot[m] = math.lerp(hotspot[b], hotspot[d], u);
                 faultActivity[m] = math.lerp(faultActivity[b], faultActivity[d], u);
                 faultType[m] = faultActivity[b] >= faultActivity[d] ? faultType[b] : faultType[d];
+                damage[m] = math.lerp(damage[b], damage[d], u);
             }
             density[m] = TMath.Density(thickness[m], age[m], P);
-            stiffness[m] = TMath.Stiffness(thickness[m], age[m], faultActivity[m], P);
+            stiffness[m] = MeshLimits.Stiffness(thickness[m], age[m], faultActivity[m], damage[m], M);
+            return rift;
         }
 
         // ============================================================== collapse
@@ -890,24 +1023,31 @@ namespace PlanetGen.Tectonics.MeshSim
             thickness[dst] = thickness[src]; age[dst] = age[src]; density[dst] = density[src]; stiffness[dst] = stiffness[src];
             orogeny[dst] = orogeny[src]; extension[dst] = extension[src]; arc[dst] = arc[src]; shear[dst] = shear[src];
             hotspot[dst] = hotspot[src]; faultActivity[dst] = faultActivity[src]; faultType[dst] = faultType[src];
+            damage[dst] = damage[src];
             vel[dst] = vel[src]; velNext[dst] = velNext[src];
         }
 
+        /// <summary>Merge g into k. Weighted by dual area, so thickness x area (crust volume) is conserved exactly;
+        /// the survivor's dual area afterwards is close to the sum of both.</summary>
         void Merge(int k, int g)
         {
             TectonicParams P = M.P;
-            float3 v = 0.5f * (vel[k] + vel[g]);
+            float ak = math.max(areaFull[k], 1e-12f), ag = math.max(areaFull[g], 1e-12f);
+            float w = ag / (ak + ag);
+            float3 v = math.lerp(vel[k], vel[g], w);
             vel[k] = v; velNext[k] = v;
-            thickness[k] = 0.5f * (thickness[k] + thickness[g]);   // survivor's area ~ both areas: volume conserved
-            age[k] = 0.5f * (age[k] + age[g]);
-            orogeny[k] = 0.5f * (orogeny[k] + orogeny[g]);
-            extension[k] = 0.5f * (extension[k] + extension[g]);
-            arc[k] = 0.5f * (arc[k] + arc[g]);
-            shear[k] = 0.5f * (shear[k] + shear[g]);
-            hotspot[k] = 0.5f * (hotspot[k] + hotspot[g]);
+            thickness[k] = math.lerp(thickness[k], thickness[g], w);
+            age[k] = math.lerp(age[k], age[g], w);
+            orogeny[k] = math.lerp(orogeny[k], orogeny[g], w);
+            extension[k] = math.lerp(extension[k], extension[g], w);
+            arc[k] = math.lerp(arc[k], arc[g], w);
+            shear[k] = math.lerp(shear[k], shear[g], w);
+            hotspot[k] = math.lerp(hotspot[k], hotspot[g], w);
             if (faultActivity[g] > faultActivity[k]) { faultActivity[k] = faultActivity[g]; faultType[k] = faultType[g]; }
+            damage[k] = math.max(damage[k], damage[g]);   // a fracture survives a merge
+            areaFull[k] = ak + ag;
             density[k] = TMath.Density(thickness[k], age[k], P);
-            stiffness[k] = TMath.Stiffness(thickness[k], age[k], faultActivity[k], P);
+            stiffness[k] = MeshLimits.Stiffness(thickness[k], age[k], faultActivity[k], damage[k], M);
         }
 
         /// <summary>Link condition + valence + (optionally) no flipped or over-long triangles. Removes V[Prev(c)].</summary>
@@ -990,24 +1130,35 @@ namespace PlanetGen.Tectonics.MeshSim
         }
     }
 
+    /// <summary>
+    /// Mantle feedback per convection cell (area-weighted, so mesh density doesn't bias it):
+    ///   feedback' = insulationHeat * cov                          continents trap heat
+    ///             - surfaceCooling * (1 - cov) * (temp + 1) / 2   exposed mantle loses heat; hotter cells lose more,
+    ///                                                             so exposure never drives a cell far below zero
+    ///             - subductionCool * consumedAreaFraction / dt    cold slabs
+    ///             - feedbackRelax * feedback
+    ///   temp = clamp(baseTemp + feedback). baseTemp starts random and relaxes toward 0 at feedbackRelax, driven by
+    ///   tempNoise, so long-term behaviour comes from the feedback rather than the initial dice roll.
+    /// </summary>
     [BurstCompile]
     public struct MeshFeedbackJob : IJob
     {
         public TectonicParams P;
-        public float dt;
+        public float dt, surfaceCool;
         public uint step;
 
         public NativeArray<Convection> conv;
         [ReadOnly] public NativeArray<byte> alive;
         [ReadOnly] public NativeArray<float3> pos;
-        [ReadOnly] public NativeArray<float> thickness;
+        [ReadOnly] public NativeArray<float> thickness, areaFull;
         [ReadOnly] public NativeArray<int> nearest;
         [ReadOnly] public NativeArray<int> consumedCell;
         [ReadOnly] public NativeArray<float3> consumedPos;
         public NativeArray<int> counters;
 
         public NativeArray<float3> sumCont, sumSub;
-        public NativeArray<int> total, contCnt, subCnt;
+        public NativeArray<float> cellArea, contArea;
+        public NativeArray<int> subCnt;
 
         public void Execute()
         {
@@ -1015,7 +1166,7 @@ namespace PlanetGen.Tectonics.MeshSim
             for (int k = 0; k < N; k++)
             {
                 sumCont[k] = float3.zero; sumSub[k] = float3.zero;
-                total[k] = 0; contCnt[k] = 0; subCnt[k] = 0;
+                cellArea[k] = 0f; contArea[k] = 0f; subCnt[k] = 0;
             }
 
             float contLimit = P.contThick * 0.75f;
@@ -1023,8 +1174,9 @@ namespace PlanetGen.Tectonics.MeshSim
             {
                 if (alive[i] == 0) continue;
                 int k = nearest[i];
-                total[k] = total[k] + 1;
-                if (thickness[i] > contLimit) { contCnt[k] = contCnt[k] + 1; sumCont[k] = sumCont[k] + pos[i]; }
+                float A = areaFull[i];
+                cellArea[k] = cellArea[k] + A;
+                if (thickness[i] > contLimit) { contArea[k] = contArea[k] + A; sumCont[k] = sumCont[k] + pos[i] * A; }
             }
             int consumed = counters[MeshTopo.ConsumedThisStep];
             for (int s = 0; s < consumed; s++)
@@ -1033,22 +1185,26 @@ namespace PlanetGen.Tectonics.MeshSim
                 subCnt[k] = subCnt[k] + 1; sumSub[k] = sumSub[k] + consumedPos[s];
             }
             counters[MeshTopo.ConsumedThisStep] = 0;
+            float meanVertexArea = 4f * math.PI / math.max(counters[MeshTopo.AliveV], 1);
 
             for (int k = 0; k < N; k++)
             {
                 Convection c = conv[k];
-                float tot = math.max(total[k], 1);
-                float cov = contCnt[k] / tot;
-                float subRate = subCnt[k] / tot / dt;
+                float area = math.max(cellArea[k], 1e-6f);
+                float cov = contArea[k] / area;
+                float subRate = subCnt[k] * meanVertexArea / area / dt;
+                float cooling = surfaceCool * (1f - cov) * math.saturate((c.temp + 1f) * 0.5f);
 
-                c.feedback += dt * (P.insulationHeat * cov - P.subductionCool * subRate - c.feedback * P.feedbackRelax);
+                c.feedback += dt * (P.insulationHeat * cov - cooling - P.subductionCool * subRate - c.feedback * P.feedbackRelax);
                 float n = TMath.Rand01((uint)k * 977u + step * 131u + P.seed) * 2f - 1f;
-                c.baseTemp = math.clamp(c.baseTemp + n * P.tempNoise * math.sqrt(dt), -1f, 1f);
+                // baseTemp is mean-reverting (same rate as the feedback) so that over Gyr it is the noise, not the
+                // random initial values, that it carries: typical size tempNoise / sqrt(2 * feedbackRelax)
+                c.baseTemp = math.clamp(c.baseTemp * math.exp(-P.feedbackRelax * dt) + n * P.tempNoise * math.sqrt(dt), -1f, 1f);
                 c.temp = math.clamp(c.baseTemp + c.feedback, -1.5f, 1.5f);
 
                 float3 target = c.pos; bool has = false;
                 if (c.temp < 0f && subCnt[k] > 0) { target = sumSub[k]; has = true; }
-                else if (c.temp > 0f && contCnt[k] > 0) { target = sumCont[k]; has = true; }
+                else if (c.temp > 0f && contArea[k] > 0f) { target = sumCont[k]; has = true; }
                 if (has)
                 {
                     target = math.normalizesafe(target, c.pos);
@@ -1081,7 +1237,7 @@ namespace PlanetGen.Tectonics.MeshSim
     // Live preview: the simulation mesh itself. One render vertex per vertex slot plus one spare
     // "dead" vertex at the origin that unused triangles and edges collapse onto.
     // ---------------------------------------------------------------------------------
-    public enum MeshDebugView { Elevation, Thickness, Age, FaultType, Orogeny, Hotspot, Velocity, EdgeLength, Valence, TopologyEvents }
+    public enum MeshDebugView { Elevation, Thickness, Age, FaultType, Orogeny, Hotspot, Velocity, EdgeLength, Valence, TopologyEvents, Thermal, Damage }
 
     [BurstCompile]
     public struct MeshPreviewVertexJob : IJobParallelFor
@@ -1093,7 +1249,7 @@ namespace PlanetGen.Tectonics.MeshSim
         [ReadOnly] public NativeArray<int> V, O, vc;
         [ReadOnly] public NativeArray<byte> alive, faultType;
         [ReadOnly] public NativeArray<float3> pos, vel;
-        [ReadOnly] public NativeArray<float> thickness, age, faultActivity, orogeny, hotspot, flashSplit, flashCollapse;
+        [ReadOnly] public NativeArray<float> thickness, age, faultActivity, orogeny, hotspot, flashSplit, flashCollapse, damage, tension;
 
         [WriteOnly, NativeDisableParallelForRestriction] public NativeArray<float3> verts;
         [WriteOnly, NativeDisableParallelForRestriction] public NativeArray<UnityEngine.Color32> colors;
@@ -1130,6 +1286,20 @@ namespace PlanetGen.Tectonics.MeshSim
             float e = TMath.ElevationKm(thickness[i], age[i], M.P);
             if (e < 0f) return math.lerp(new float4(0f, 0.05f, 0.35f, 1f), new float4(0.2f, 0.55f, 0.85f, 1f), math.saturate((e + 5f) / 5f));
             return math.lerp(new float4(0.25f, 0.6f, 0.2f, 1f), new float4(1f), math.saturate(e / 5f));
+        }
+
+        /// <summary>Symbolic temperature ramp. heat 1 = molten, 0 = cold. Darkest stop stays at ~20% grey so cold
+        /// crust is visible against the editor background and the wireframe.</summary>
+        public static float4 ThermalColor(float heat)
+        {
+            float3 c0 = new float3(0.20f, 0.20f, 0.21f);   // cold: charcoal
+            float3 c1 = new float3(0.36f, 0.29f, 0.24f);   // cool: brown-grey
+            float3 c2 = new float3(0.58f, 0.13f, 0.03f);   // cooling: dark red-orange
+            float3 c3 = new float3(1.00f, 0.42f, 0.04f);   // hot: magma orange
+            float3 c4 = new float3(1.00f, 0.80f, 0.28f);   // extremely hot: yellow-orange
+            float h = math.saturate(heat) * 4f;
+            float3 c = h < 1f ? math.lerp(c0, c1, h) : h < 2f ? math.lerp(c1, c2, h - 1f) : h < 3f ? math.lerp(c2, c3, h - 2f) : math.lerp(c3, c4, h - 3f);
+            return new float4(c, 1f);
         }
 
         float4 ColorFor(int i)
@@ -1177,6 +1347,18 @@ namespace PlanetGen.Tectonics.MeshSim
                     b += new float4(1f, 0.45f, 0f, 0f) * flashCollapse[i];
                     b.w = 1f;
                     return b;
+                }
+                case 10: // Thermal: 1 - thermal strength of (age + global thermal age)
+                    return ThermalColor(1f - MeshLimits.ThermalStrength(age[i], M));
+                case 11: // Damage: dimmed elevation, yellow -> red with damage, blue tint where tension exceeds yield
+                {
+                    float4 b = Elevation(i) * 0.3f;
+                    float D = damage[i];
+                    float3 dc = D < 0.5f ? math.lerp(new float3(0.3f, 0.3f, 0.3f), new float3(1f, 0.85f, 0.1f), D * 2f)
+                                         : math.lerp(new float3(1f, 0.85f, 0.1f), new float3(1f, 0.05f, 0.02f), D * 2f - 1f);
+                    float3 rgb = math.lerp(b.xyz, dc, math.saturate(D * 4f));
+                    if (tension[i] > M.extYield) rgb += new float3(0f, 0.1f, 0.35f) * math.saturate((tension[i] - M.extYield) / math.max(M.extYield, 1e-3f));
+                    return new float4(rgb, 1f);
                 }
                 default: return Elevation(i);
             }

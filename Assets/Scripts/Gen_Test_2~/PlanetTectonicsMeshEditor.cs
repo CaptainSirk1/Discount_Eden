@@ -60,6 +60,16 @@ namespace PlanetGen.Tectonics.MeshSim.EditorTools
                         $"{t.InvertedTriangles} inverted   ·   {t.CapacityHits} capacity hits", mini);
                     GUI.color = old;
 
+                    var dg = t.Diagnostics;
+                    EditorGUILayout.LabelField(
+                        $"global thermal age {dg.globalThermalAge:F0} Myr   ·   continents {dg.continentalAreaFrac * 100f:F1}% of surface", mini);
+                    EditorGUILayout.LabelField(
+                        $"crust {dg.crustVolume / 1e9f:F2}  continental {dg.continentalVolume / 1e9f:F2} (10⁹ km³)   ·   " +
+                        $"continental vertices subducted {t.ContinentalSubducted}", mini);
+                    EditorGUILayout.LabelField(
+                        $"damage mean {dg.meanDamage:F3} max {dg.maxDamage:F2}   ·   continents: mean {dg.continentalMeanDamage:F3}, " +
+                        $"{dg.continentalFracturedFrac * 100f:F1}% fractured   ·   tension {dg.meanTension:F2}", mini);
+
                     if (t.IsAnimating)
                     {
                         bool behind = t.EffectiveMyrPerSecond < t.animMyrPerSecond * 0.9f;
