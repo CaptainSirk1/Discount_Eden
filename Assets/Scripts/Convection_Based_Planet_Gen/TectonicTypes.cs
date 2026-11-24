@@ -50,6 +50,17 @@ namespace PlanetGen.Tectonics
 
         // crust constants (km)
         public float oceanThick, contThick;
+
+        // gravity cap: convergence stalls once crust can no longer thicken
+        public float lockStart, lockMargin, lockStrength;
+        // trenches: subducting points this close to the overriding plate are consumed
+        public float consumeDist;
+
+        // void filling
+        public float expectNeighbors;   // neighbours within interactR on an even lattice
+        public float voidFill;          // crowding below this proposes a spawn (0 = off)
+        public float voidBias;          // |mean neighbour direction| above this = hole edge
+        public float invSpawnCell;      // 1 / spawn-hash cell size
     }
 
     public static class TMath
@@ -104,6 +115,19 @@ namespace PlanetGen.Tectonics
             return (Hash(x) & 0xFFFFFFu) / 16777216f;
         }
 
+        public static uint HashCell(int3 c)
+        {
+            return Hash((uint)c.x * 73856093u ^ (uint)c.y * 19349663u ^ (uint)c.z * 83492791u);
+        }
+
+        /// <summary>Continuous tangent frame used by the preview quads and the Velocity view.</summary>
+        public static void TangentFrame(float3 n, out float3 t, out float3 bt)
+        {
+            float3 up = math.abs(n.y) < 0.99f ? new float3(0f, 1f, 0f) : new float3(1f, 0f, 0f);
+            t = math.normalize(math.cross(up, n));
+            bt = math.cross(n, t);
+        }
+
         public static int Cell(float3 p, in TectonicParams P)
         {
             int3 c = (int3)math.floor((p + 1f) * P.invCell);
@@ -130,6 +154,7 @@ namespace PlanetGen.Tectonics
         public float arc;             // decaying subduction-arc volcanism
         public float shear;           // decaying accumulated transform shear
         public float hotspot;         // accumulated plume exposure
+        public float crowding;        // local point density, 1 = even lattice
         public float elevationKm;     // rough isostatic starting point, replace freely
     }
 

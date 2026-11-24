@@ -8,19 +8,27 @@ using UnityEngine.Rendering;
 
 namespace PlanetGen.Tectonics
 {
-    public enum TectonicDebugView { Elevation, Thickness, Age, FaultType, Orogeny, Hotspot, Velocity }
+    public enum TectonicDebugView { Elevation, Thickness, Age, FaultType, Orogeny, Hotspot, Velocity, Crowding }
 
     /// <summary>Owns all native buffers for one simulation run.</summary>
     public sealed class TectonicState : IDisposable
     {
-        public readonly int Capacity, CellCount, ConvCount;
+        public readonly int Capacity, CellCount, ConvCount, LatticeCount;
         readonly List<Action> _dispose = new List<Action>();
 
         public NativeArray<float3> pos, vel, velNext, driven, sepDisp, compAxis, faultDir, slab;
         public NativeArray<float> thickness, age, stiffness, density, orogeny, extension, arc, shear, hotspot, faultActivity;
-        public NativeArray<float> rClose, rOpen, rShear, rSub, rOver, rCrumple;
-        public NativeArray<byte> alive, faultType, removeFlag, claimed;
+        public NativeArray<float> rClose, rOpen, rShear, rSub, rOver, rCrumple, crowding;
+        public NativeArray<byte> alive, faultType, removeFlag;
         public NativeArray<int> spawnPartner, nearest, freeList, counters, cellStart, cellCursor, cellItems, cellOf;
+        public NativeArray<float3> spawnPos;
+        public NativeArray<int> spawnHash, spawnSlots;
+
+        // remesh: target lattice + gather buffers
+        public NativeArray<float3> lattice;
+        public NativeArray<float3> tPos, tVel, tFaultDir, tSlab;
+        public NativeArray<float> tThickness, tAge, tDensity, tStiffness, tOrogeny, tExtension, tArc, tShear, tHotspot, tFaultActivity;
+        public NativeArray<byte> tFaultType;
         public NativeArray<Convection> conv;
         public NativeArray<float3> convSumCont, convSumSub;
         public NativeArray<int> convTotal, convCont, convSub;
@@ -32,9 +40,9 @@ namespace PlanetGen.Tectonics
             return a;
         }
 
-        public TectonicState(int capacity, int cellCount, int convCount)
+        public TectonicState(int capacity, int cellCount, int convCount, int latticeCount)
         {
-            Capacity = capacity; CellCount = cellCount; ConvCount = convCount;
+            Capacity = capacity; CellCount = cellCount; ConvCount = convCount; LatticeCount = latticeCount;
             pos = Alloc<float3>(capacity); vel = Alloc<float3>(capacity); velNext = Alloc<float3>(capacity);
             driven = Alloc<float3>(capacity); sepDisp = Alloc<float3>(capacity); compAxis = Alloc<float3>(capacity);
             faultDir = Alloc<float3>(capacity); slab = Alloc<float3>(capacity);
@@ -44,8 +52,11 @@ namespace PlanetGen.Tectonics
             faultActivity = Alloc<float>(capacity);
             rClose = Alloc<float>(capacity); rOpen = Alloc<float>(capacity); rShear = Alloc<float>(capacity);
             rSub = Alloc<float>(capacity); rOver = Alloc<float>(capacity); rCrumple = Alloc<float>(capacity);
+            crowding = Alloc<float>(capacity);
             alive = Alloc<byte>(capacity); faultType = Alloc<byte>(capacity); removeFlag = Alloc<byte>(capacity);
-            claimed = Alloc<byte>(cellCount);
+            spawnPos = Alloc<float3>(capacity); spawnSlots = Alloc<int>(capacity);
+            spawnHash = Alloc<int>(math.ceilpow2(capacity * 2));
+            for (int k = 0; k < spawnHash.Length; k++) spawnHash[k] = -1;
             spawnPartner = Alloc<int>(capacity); nearest = Alloc<int>(capacity); freeList = Alloc<int>(capacity);
             counters = Alloc<int>(4);
             cellStart = Alloc<int>(cellCount + 1); cellCursor = Alloc<int>(cellCount);
@@ -53,6 +64,14 @@ namespace PlanetGen.Tectonics
             conv = Alloc<Convection>(convCount);
             convSumCont = Alloc<float3>(convCount); convSumSub = Alloc<float3>(convCount);
             convTotal = Alloc<int>(convCount); convCont = Alloc<int>(convCount); convSub = Alloc<int>(convCount);
+
+            lattice = Alloc<float3>(latticeCount);
+            tPos = Alloc<float3>(capacity); tVel = Alloc<float3>(capacity);
+            tFaultDir = Alloc<float3>(capacity); tSlab = Alloc<float3>(capacity);
+            tThickness = Alloc<float>(capacity); tAge = Alloc<float>(capacity); tDensity = Alloc<float>(capacity);
+            tStiffness = Alloc<float>(capacity); tOrogeny = Alloc<float>(capacity); tExtension = Alloc<float>(capacity);
+            tArc = Alloc<float>(capacity); tShear = Alloc<float>(capacity); tHotspot = Alloc<float>(capacity);
+            tFaultActivity = Alloc<float>(capacity); tFaultType = Alloc<byte>(capacity);
         }
 
         public void Dispose()
@@ -130,12 +149,22 @@ namespace PlanetGen.Tectonics
         [Range(1.6f, 3.5f)] public float interactionRadius = 2.2f;
         [Range(0.4f, 1.2f)] public float minPointDistance = 0.8f;
         [Range(0.8f, 2f)] public float collisionDistance = 1.3f;
-        [Range(0f, 1f)] public float separationStrength = 0.5f;
+        [Tooltip("1 = hard minimum distance (each overlap fully resolved per step).")]
+        [Range(0f, 1f)] public float separationStrength = 0.8f;
+
+        [Header("Gravity Cap (crust that can't thicken can't compress)")]
+        [Tooltip("How completely convergence stalls once crust nears maxThicknessKm. 0 = original behaviour " +
+                 "(points keep packing), 1 = colliding plates lock until erosion makes room.")]
+        [Range(0f, 1f)] public float gravityLock = 1f;
+        [Tooltip("km below maxThicknessKm over which the lock ramps in.")]
+        public float gravityLockMarginKm = 8f;
 
         [Header("Subduction")]
         public float subductThicknessDiffKm = 12f;
         public float subductDensityDiff = 0.2f;
         [Range(0f, 2f)] public float subductionRate = 1f;
+        [Tooltip("A subducting point closer than this (x spacing) to the overriding plate is consumed. Keeps trenches from over-packing.")]
+        [Range(0.2f, 1f)] public float consumeDistance = 0.6f;
 
         [Header("Divergence")]
         [Range(1.1f, 2f)] public float gapDistance = 1.5f;
@@ -146,6 +175,19 @@ namespace PlanetGen.Tectonics
         [Range(0f, 1f)] public float riftCrustBlend = 0.35f;
         [Tooltip("km of continental thinning per Myr at reference spreading speed.")]
         public float extensionThinning = 0.25f;
+
+        [Header("Void Filling")]
+        [Tooltip("Spawn new crust wherever local density drops, not only between opening pairs. Fixes holes that grow past the interaction radius.")]
+        public bool voidFilling = true;
+        [Tooltip("Crowding (1 = even lattice) below which a point proposes new crust next to it.")]
+        [Range(0.3f, 0.95f)] public float voidFillThreshold = 0.7f;
+        [Tooltip("How one-sided a point's neighbourhood must be to count as a hole edge. Below this, a random direction is tried.")]
+        [Range(0.05f, 0.6f)] public float voidDirectionBias = 0.2f;
+
+        [Header("Remesh (safety net)")]
+        [Tooltip("Resample every point onto the original lattice every N Myr. 0 = off. Guarantees even spacing " +
+                 "but causes a brief visible shimmer; usually unnecessary with void filling and the gravity cap.")]
+        public float remeshIntervalMyr = 0f;
 
         [Header("Crumple / Terrain Accumulators")]
         public float crumpleThickening = 0.35f;
@@ -193,6 +235,9 @@ namespace PlanetGen.Tectonics
         public int AliveCount { get; private set; }
         public int SpawnedCount { get; private set; }
         public int SubductedCount { get; private set; }
+        /// <summary>Measured simulation speed. Drops below animMyrPerSecond when the sim can't keep up.</summary>
+        public float EffectiveMyrPerSecond { get; private set; }
+        public int RemeshCount { get; private set; }
 
         // ---- simulation state (persists across frames) ----
         TectonicState _state;
@@ -201,6 +246,9 @@ namespace PlanetGen.Tectonics
         bool _jobsInFlight, _previewPending, _playing, _finishPending, _previewDirty;
         int _stepIndex, _batchesSinceSnapshot;
         float _accum, _lastTick;
+        float _stepBudget = 1f;                 // adaptive steps-per-batch cap
+        int _batchSteps, _rateSteps; float _rateTime;
+        int _lastRemeshStep;
         System.Diagnostics.Stopwatch _runTimer;
 
         // structural values fixed for the lifetime of a run
@@ -329,7 +377,32 @@ namespace PlanetGen.Tectonics
             _lastTick = now;
             if (_state == null) return;
 
-            bool uploaded = CompleteJobs();   // last frame's batch: uploads mesh, caches stats
+            // Never block the frame. If last frame's batch is still running, let it keep going in the
+            // background and shrink future batches; simulated time simply advances more slowly.
+            if (_jobsInFlight && !_handle.IsCompleted)
+            {
+                _stepBudget = Mathf.Max(1f, _stepBudget * 0.7f);
+                if (_playing) _rateTime += wall;
+                return;
+            }
+
+            bool hadBatch = _jobsInFlight && _batchSteps > 0;
+            bool uploaded = CompleteJobs();   // already finished: uploads mesh, caches stats, no wait
+            if (hadBatch)
+            {
+                _rateSteps += _batchSteps;
+                _batchSteps = 0;
+                _stepBudget = Mathf.Min(maxStepsPerFrame, _stepBudget + 0.25f);   // finished in time: allow a bit more
+            }
+            if (_playing)
+            {
+                _rateTime += wall;
+                if (_rateTime >= 0.5f)
+                {
+                    EffectiveMyrPerSecond = _rateSteps * _dt / _rateTime;
+                    _rateSteps = 0; _rateTime = 0f;
+                }
+            }
 
             if (_finishPending)
             {
@@ -348,14 +421,16 @@ namespace PlanetGen.Tectonics
                 if (remaining <= 0) { _playing = false; _finishPending = true; }
                 else
                 {
+                    int cap = Mathf.Clamp((int)_stepBudget, 1, maxStepsPerFrame);
                     _accum += wall * Mathf.Max(0f, animMyrPerSecond) / _dt;
-                    int n = Mathf.Min((int)_accum, Mathf.Min(maxStepsPerFrame, remaining));
-                    _accum = Mathf.Min(_accum - n, maxStepsPerFrame);   // never bank a backlog
+                    int n = Mathf.Min((int)_accum, Mathf.Min(cap, remaining));
+                    _accum = Mathf.Min(_accum - n, cap);   // never bank a backlog
 
                     if (n > 0)
                     {
                         _handle = SchedulePreview(ScheduleSteps(n, default));
                         _stepIndex += n;
+                        _batchSteps = n;
                         _jobsInFlight = true;
                         JobHandle.ScheduleBatchedJobs();   // runs on workers while the main thread renders
                         if (_stepIndex >= TotalSteps) { _playing = false; _finishPending = true; }
@@ -399,10 +474,13 @@ namespace PlanetGen.Tectonics
             _seedHash = (uint)seed * 2654435761u + 12345u;
 
             _P = BuildParams();
-            _state = new TectonicState(_capacity, cells, _convN);
+            _state = new TectonicState(_capacity, cells, _convN, M);
             InitState(_state, _P, M, _convN);
 
             _stepIndex = 0; _accum = 0f; _batchesSinceSnapshot = 0;
+            _stepBudget = 1f; _rateSteps = 0; _rateTime = 0f; EffectiveMyrPerSecond = 0f;
+            _lastRemeshStep = 0; RemeshCount = 0;
+            _batchSteps = 0;
             _playing = false; _finishPending = false;
             AliveCount = M; SpawnedCount = 0; SubductedCount = 0;
             ConvectionPoints = _state.conv.ToArray();
@@ -447,7 +525,17 @@ namespace PlanetGen.Tectonics
 
                 faultThreshold = faultThreshold, faultMemory = faultMemoryMyr,
                 velRef = velocityReference, transformDominance = transformDominance,
-                oceanThick = oceanThicknessKm, contThick = continentThicknessKm
+                oceanThick = oceanThicknessKm, contThick = continentThicknessKm,
+
+                lockMargin = Mathf.Max(0.1f, gravityLockMarginKm),
+                lockStart = maxThicknessKm - Mathf.Max(0.1f, gravityLockMarginKm),
+                lockStrength = gravityLock,
+                consumeDist = consumeDistance * _spacing,
+
+                expectNeighbors = Mathf.Max(1f, math.PI * (_interactR / _spacing) * (_interactR / _spacing) - 1f),
+                voidFill = voidFilling ? voidFillThreshold : 0f,
+                voidBias = voidDirectionBias,
+                invSpawnCell = 1f / Mathf.Max(holeClearance * _spacing, 1e-5f)
             };
         }
 
@@ -514,6 +602,8 @@ namespace PlanetGen.Tectonics
                 s.faultDir[i] = math.normalizesafe(math.cross(s.pos[i], new float3(0, 1, 0)), new float3(1, 0, 0));
             }
 
+            for (int i = 0; i < M; i++) s.lattice[i] = s.pos[i];   // remesh target = the initial lattice
+
             int free = s.Capacity - M;
             for (int k = 0; k < free; k++) s.freeList[k] = s.Capacity - 1 - k;
             s.counters[0] = M; s.counters[1] = free;
@@ -536,7 +626,7 @@ namespace PlanetGen.Tectonics
                 var build = new BuildGridJob
                 {
                     P = P, pos = s.pos, alive = s.alive, cellStart = s.cellStart, cursor = s.cellCursor,
-                    cellItems = s.cellItems, cellOf = s.cellOf, claimed = s.claimed
+                    cellItems = s.cellItems, cellOf = s.cellOf
                 }.Schedule(h);
 
                 var drive = new ConvectionDriveJob
@@ -555,7 +645,8 @@ namespace PlanetGen.Tectonics
                     cellStart = s.cellStart, cellItems = s.cellItems,
                     velNext = s.velNext, sepDisp = s.sepDisp, compAxis = s.compAxis, slab = s.slab,
                     rClose = s.rClose, rOpen = s.rOpen, rShear = s.rShear, rSub = s.rSub, rOver = s.rOver,
-                    rCrumple = s.rCrumple, removeFlag = s.removeFlag, spawnPartner = s.spawnPartner
+                    rCrumple = s.rCrumple, crowding = s.crowding,
+                    removeFlag = s.removeFlag, spawnPartner = s.spawnPartner, spawnPos = s.spawnPos
                 }.Schedule(cap, 128, pre);
 
                 var integ = new IntegrateJob
@@ -579,16 +670,72 @@ namespace PlanetGen.Tectonics
 
                 h = new StructureJob
                 {
-                    P = P, alive = s.alive, faultType = s.faultType, claimed = s.claimed,
-                    removeFlag = s.removeFlag, spawnPartner = s.spawnPartner,
+                    P = P, alive = s.alive, faultType = s.faultType,
+                    removeFlag = s.removeFlag, spawnPartner = s.spawnPartner, spawnPos = s.spawnPos,
                     freeList = s.freeList, counters = s.counters,
+                    spawnHash = s.spawnHash, spawnSlots = s.spawnSlots,
                     pos = s.pos, vel = s.vel, faultDir = s.faultDir, slab = s.slab,
                     thickness = s.thickness, age = s.age, density = s.density, stiffness = s.stiffness,
                     orogeny = s.orogeny, extension = s.extension, arc = s.arc, shear = s.shear,
                     hotspot = s.hotspot, faultActivity = s.faultActivity
                 }.Schedule(fb);
+
+                // optional remesh onto the original lattice
+                if (remeshIntervalMyr > 0f)
+                {
+                    int every = Mathf.Max(1, Mathf.RoundToInt(remeshIntervalMyr / dt));
+                    int done = (int)step + 1;
+                    if (done - _lastRemeshStep >= every)
+                    {
+                        _lastRemeshStep = done;
+                        RemeshCount++;
+                        h = ScheduleRemesh(h);
+                    }
+                }
             }
             return h;
+        }
+
+        JobHandle ScheduleRemesh(JobHandle dep)
+        {
+            var s = _state;
+            var P = _P;
+            int M = s.LatticeCount;
+
+            var grid = new BuildGridJob
+            {
+                P = P, pos = s.pos, alive = s.alive, cellStart = s.cellStart, cursor = s.cellCursor,
+                cellItems = s.cellItems, cellOf = s.cellOf
+            }.Schedule(dep);
+
+            var gather = new RemeshGatherJob
+            {
+                P = P, lattice = s.lattice, cellStart = s.cellStart, cellItems = s.cellItems,
+                pos = s.pos, vel = s.vel, faultDir = s.faultDir, slab = s.slab,
+                thickness = s.thickness, age = s.age, density = s.density, stiffness = s.stiffness,
+                orogeny = s.orogeny, extension = s.extension, arc = s.arc, shear = s.shear,
+                hotspot = s.hotspot, faultActivity = s.faultActivity, faultType = s.faultType,
+                oPos = s.tPos, oVel = s.tVel, oFaultDir = s.tFaultDir, oSlab = s.tSlab,
+                oThickness = s.tThickness, oAge = s.tAge, oDensity = s.tDensity, oStiffness = s.tStiffness,
+                oOrogeny = s.tOrogeny, oExtension = s.tExtension, oArc = s.tArc, oShear = s.tShear,
+                oHotspot = s.tHotspot, oFaultActivity = s.tFaultActivity, oFaultType = s.tFaultType
+            }.Schedule(M, 256, grid);
+
+            var apply = new RemeshApplyJob
+            {
+                count = M,
+                tPos = s.tPos, tVel = s.tVel, tFaultDir = s.tFaultDir, tSlab = s.tSlab,
+                tThickness = s.tThickness, tAge = s.tAge, tDensity = s.tDensity, tStiffness = s.tStiffness,
+                tOrogeny = s.tOrogeny, tExtension = s.tExtension, tArc = s.tArc, tShear = s.tShear,
+                tHotspot = s.tHotspot, tFaultActivity = s.tFaultActivity, tFaultType = s.tFaultType,
+                alive = s.alive, removeFlag = s.removeFlag, faultType = s.faultType, spawnPartner = s.spawnPartner,
+                pos = s.pos, vel = s.vel, faultDir = s.faultDir, slab = s.slab,
+                thickness = s.thickness, age = s.age, density = s.density, stiffness = s.stiffness,
+                orogeny = s.orogeny, extension = s.extension, arc = s.arc, shear = s.shear,
+                hotspot = s.hotspot, faultActivity = s.faultActivity
+            }.Schedule(s.Capacity, 512, gather);
+
+            return new RemeshFinalizeJob { count = M, freeList = s.freeList, counters = s.counters }.Schedule(apply);
         }
 
         JobHandle SchedulePreview(JobHandle dependency)
@@ -603,7 +750,7 @@ namespace PlanetGen.Tectonics
                 halfSize = previewPointSize * _spacing * planetRadiusKm,
                 alive = s.alive, faultType = s.faultType, pos = s.pos, vel = s.vel,
                 thickness = s.thickness, age = s.age, faultActivity = s.faultActivity,
-                orogeny = s.orogeny, hotspot = s.hotspot,
+                orogeny = s.orogeny, hotspot = s.hotspot, crowding = s.crowding,
                 verts = _verts, colors = _colors
             }.Schedule(s.Capacity, 512, dependency);
         }
@@ -697,7 +844,7 @@ namespace PlanetGen.Tectonics
                     faultType = (FaultType)s.faultType[i], faultActivity = s.faultActivity[i],
                     faultDir = s.faultDir[i],
                     orogeny = s.orogeny[i], extension = s.extension[i], arc = s.arc[i],
-                    shear = s.shear[i], hotspot = s.hotspot[i],
+                    shear = s.shear[i], hotspot = s.hotspot[i], crowding = s.crowding[i],
                     elevationKm = TMath.ElevationKm(t, s.age[i], _P)
                 };
             }
@@ -826,6 +973,11 @@ namespace PlanetGen.Tectonics
                     float h = Mathf.Atan2(Vector3.Dot(p.velocity, b), Vector3.Dot(p.velocity, t)) / (2f * Mathf.PI) + 1f;
                     float sp = Mathf.Clamp01(p.velocity.magnitude / velocityReference);
                     return Color.HSVToRGB(h % 1f, 0.85f, 0.25f + 0.75f * sp);
+                }
+                case TectonicDebugView.Crowding:
+                {
+                    float4 c = PreviewMeshJob.CrowdingColor(p.crowding);
+                    return new Color(c.x, c.y, c.z);
                 }
                 default:
                     float e = p.elevationKm;

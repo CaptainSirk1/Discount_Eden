@@ -48,8 +48,18 @@ namespace PlanetGen.Tectonics.EditorTools
                 EditorGUI.ProgressBar(r, t.Progress, label);
 
                 if (t.HasSimulation)
-                    EditorGUILayout.LabelField($"+{t.SpawnedCount} spawned   -{t.SubductedCount} subducted   ·   dt {t.LastStepMyr:F2} Myr",
+                {
+                    EditorGUILayout.LabelField($"+{t.SpawnedCount} spawned   -{t.SubductedCount} subducted   ·   dt {t.LastStepMyr:F2} Myr" +
+                                               (t.RemeshCount > 0 ? $"   ·   {t.RemeshCount} remeshes" : ""),
                         EditorStyles.miniLabel);
+                    if (t.IsAnimating)
+                    {
+                        bool behind = t.EffectiveMyrPerSecond < t.animMyrPerSecond * 0.9f;
+                        EditorGUILayout.LabelField(
+                            $"Running at {t.EffectiveMyrPerSecond:F0} Myr/s" + (behind ? "  (sim-limited: slowed down to keep frames smooth)" : ""),
+                            EditorStyles.miniLabel);
+                    }
+                }
             }
 
             EditorGUILayout.Space(4);

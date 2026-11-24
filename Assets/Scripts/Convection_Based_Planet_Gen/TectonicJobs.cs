@@ -8,10 +8,11 @@ namespace PlanetGen.Tectonics
     // ---------------------------------------------------------------------------------
     // Step pipeline (chained, never completed mid-simulation):
     //   BuildGrid  ||  ConvectionDrive      (parallel with each other)
-    //   -> Interaction   (neighbour queries: coupling, faults, subduction flags, rift gaps)
+    //   -> Interaction   (neighbour queries: coupling, gravity lock, faults, subduction, spawn proposals)
     //   -> Integrate     (move, thicken/thin, accumulate terrain data)
     //   -> ConvectionFeedback (continents insulate, slabs cool, cells drift)
-    //   -> Structure     (apply removals, spawn new crust)
+    //   -> Structure     (apply removals, spawn new crust with spacing check)
+    //   [-> BuildGrid -> RemeshGather -> RemeshApply -> RemeshFinalize]  (optional, every N steps)
     // Every parallel job writes only index i and reads neighbours from arrays it does not write.
     // ---------------------------------------------------------------------------------
 
@@ -25,13 +26,11 @@ namespace PlanetGen.Tectonics
         public NativeArray<int> cursor;      // cells
         public NativeArray<int> cellItems;   // capacity
         public NativeArray<int> cellOf;      // capacity
-        public NativeArray<byte> claimed;    // cells
 
         public void Execute()
         {
             int cells = cursor.Length;
             for (int c = 0; c <= cells; c++) cellStart[c] = 0;
-            for (int c = 0; c < cells; c++) claimed[c] = 0;
 
             for (int i = 0; i < pos.Length; i++)
             {
@@ -109,6 +108,9 @@ namespace PlanetGen.Tectonics
     [BurstCompile]
     public struct InteractionJob : IJobParallelFor
     {
+        public const int SpawnNone = -1;
+        public const int SpawnVoid = -2;   // spawnPartner value for a density-based fill (no partner)
+
         public TectonicParams P;
         public float dt;
         public uint step;
@@ -133,14 +135,18 @@ namespace PlanetGen.Tectonics
         public NativeArray<float> rSub;
         public NativeArray<float> rOver;
         public NativeArray<float> rCrumple;
+        public NativeArray<float> crowding;
         public NativeArray<byte> removeFlag;
         public NativeArray<int> spawnPartner;
+        public NativeArray<float3> spawnPos;
+
+        float Headroom(float t) => math.saturate((t - P.lockStart) / P.lockMargin);
 
         public void Execute(int i)
         {
             removeFlag[i] = 0;
-            spawnPartner[i] = -1;
-            if (alive[i] == 0) return;
+            spawnPartner[i] = SpawnNone;
+            if (alive[i] == 0) { crowding[i] = 0f; return; }
 
             float3 pi = pos[i];
             float3 vi = vel[i];
@@ -156,6 +162,14 @@ namespace PlanetGen.Tectonics
             float3 sep = float3.zero, slabF = float3.zero;
             float bestAbs = 0f; float3 axis = float3.zero;
             float bestGap = 0f; int gapJ = -1;
+
+            int count = 0; float3 dirSum = float3.zero;
+            bool consumed = false;
+            float headI = Headroom(ti);
+
+            // gravity-lock constraints, resolved after the new velocity is known: (dir, vel_j . dir), amount
+            var lockDir = new FixedList512Bytes<float4>();
+            var lockAmt = new FixedList128Bytes<float>();
 
             for (int dz = -1; dz <= 1; dz++)
             for (int dy = -1; dy <= 1; dy++)
@@ -176,6 +190,9 @@ namespace PlanetGen.Tectonics
                     float3 dir = delta / d;
                     dir -= pi * math.dot(dir, pi);
                     dir = math.normalizesafe(dir);
+
+                    count++;
+                    dirSum += dir;
 
                     float w = 1f - d / P.interactR; w *= w;
                     float sj = stiffness[j];
@@ -212,17 +229,34 @@ namespace PlanetGen.Tectonics
                             {
                                 subSum += closing * w; subW += w;
                                 slabF += dir * (P.slabPull * (di - dj) * w);
+                                // overridden: consume now instead of letting the trench pack up
+                                if (d < P.consumeDist) consumed = true;
                             }
                             else overSum += closing * w;
                         }
                         else crumpleSum += closing * w;
                     }
 
-                    // --- soft collision: softer point yields more. Subducting pairs pass under each other. ---
-                    if (d < P.minDist && !subduct)
+                    if (!subduct)
                     {
-                        float share = sj / (si + sj + 1e-5f);
-                        sep -= dir * ((P.minDist - d) * share * P.sepStrength);
+                        // --- separation: softer point yields more. Subducting pairs pass under each other. ---
+                        if (d < P.minDist)
+                        {
+                            float share = sj / (si + sj + 1e-5f);
+                            sep -= dir * ((P.minDist - d) * share * P.sepStrength);
+                        }
+
+                        // --- gravity cap: crust that can't thicken any more can't be compressed any more ---
+                        if (d < P.collDist && lockDir.Length < 30)
+                        {
+                            float lockA = P.lockStrength * math.max(headI, Headroom(tj));
+                            if (lockA > 0f)
+                            {
+                                float share = sj / (si + sj + 1e-5f);
+                                lockDir.Add(new float4(dir, math.dot(vel[j], dir)));
+                                lockAmt.Add(lockA * share);
+                            }
+                        }
                     }
 
                     // --- rift gap candidate: opening pair with nothing between them ---
@@ -233,7 +267,7 @@ namespace PlanetGen.Tectonics
                         if (d > gd)
                         {
                             float3 m = math.normalize(pi + pos[j]);
-                            if (IsHoleClear(i, j, m, ci)) { bestGap = d; gapJ = j; }
+                            if (IsClear(i, j, m, ci)) { bestGap = d; gapJ = j; }
                         }
                     }
                 }
@@ -245,6 +279,20 @@ namespace PlanetGen.Tectonics
             float3 target = math.lerp(driven[i], coupled, cpl);
             float resp = 1f - math.exp(-dt / P.velTau);
             float3 vNew = math.lerp(vi, target, resp);
+
+            // --- gravity cap: remove this point's share of the closing motion toward locked neighbours ---
+            if (lockDir.Length > 0)
+            {
+                float3 corr = float3.zero; float n = 0f;
+                for (int k = 0; k < lockDir.Length; k++)
+                {
+                    float4 e = lockDir[k];
+                    float relClose = math.dot(vNew, e.xyz) - e.w;   // > 0: moving toward j
+                    if (relClose > 0f) { corr += e.xyz * (relClose * lockAmt[k]); n += 1f; }
+                }
+                if (n > 0f) vNew -= corr / n;
+            }
+
             vNew -= pi * math.dot(vNew, pi);
             float sp = math.length(vNew);
             if (sp > P.maxSpeed) vNew *= P.maxSpeed / sp;
@@ -267,19 +315,54 @@ namespace PlanetGen.Tectonics
             compAxis[i] = axis;
             slab[i] = slabF;
 
-            // --- area-conserving removal: boundary row consumed at the closing speed ---
-            if (subW > 0f)
+            // --- removal: deterministic when overridden, plus the original area-conserving trickle ---
+            bool remove = consumed;
+            if (!remove && subW > 0f)
             {
                 float meanClose = subSum / subW;
                 float pRemove = P.subductRate * meanClose * dt / P.spacing;
                 if (TMath.Rand01((uint)i * 747796405u + step * 2891336453u + P.seed) < pRemove)
-                    removeFlag[i] = 1;
+                    remove = true;
             }
+            removeFlag[i] = remove ? (byte)1 : (byte)0;
 
-            spawnPartner[i] = gapJ;
+            // --- crowding: 1 on an even lattice ---
+            float crowd = count / P.expectNeighbors;
+            crowding[i] = crowd;
+
+            // --- spawn proposal: rift gap first, then density-based void fill ---
+            if (gapJ >= 0)
+            {
+                spawnPartner[i] = gapJ;
+                spawnPos[i] = math.normalize(pi + pos[gapJ]);
+            }
+            else if (!remove && P.voidFill > 0f && crowd < P.voidFill)
+            {
+                float3 m = count > 0 ? dirSum / count : float3.zero;
+                m -= pi * math.dot(m, pi);
+                float ml = math.length(m);
+                float3 away;
+                if (ml > P.voidBias)
+                {
+                    away = -m / ml;   // hole edge: step into the empty side
+                }
+                else
+                {
+                    // uniformly sparse: try a random direction, the clearance test rejects bad picks
+                    TMath.TangentFrame(pi, out float3 t, out float3 bt);
+                    float a = TMath.Rand01((uint)i * 2246822519u + step * 3266489917u + (P.seed ^ 0x9e3779b9u)) * (2f * math.PI);
+                    away = t * math.cos(a) + bt * math.sin(a);
+                }
+                float3 cand = math.normalize(pi + away * P.spacing);
+                if (IsClear(i, -1, cand, ci))
+                {
+                    spawnPartner[i] = SpawnVoid;
+                    spawnPos[i] = cand;
+                }
+            }
         }
 
-        bool IsHoleClear(int self, int other, float3 m, int3 ci)
+        bool IsClear(int self, int other, float3 m, int3 ci)
         {
             float clear2 = P.holeClear * P.holeClear;
             for (int dz = -1; dz <= 1; dz++)
@@ -481,10 +564,13 @@ namespace PlanetGen.Tectonics
     {
         public TectonicParams P;
 
-        public NativeArray<byte> alive, faultType, claimed;
+        public NativeArray<byte> alive, faultType;
         [ReadOnly] public NativeArray<byte> removeFlag;
         [ReadOnly] public NativeArray<int> spawnPartner;
+        [ReadOnly] public NativeArray<float3> spawnPos;
         public NativeArray<int> freeList, counters;
+        public NativeArray<int> spawnHash;    // power-of-two size, all -1 between steps
+        public NativeArray<int> spawnSlots;   // scratch: hash slots touched this step
 
         public NativeArray<float3> pos, vel, faultDir, slab;
         public NativeArray<float> thickness, age, density, stiffness;
@@ -508,47 +594,197 @@ namespace PlanetGen.Tectonics
                 }
             }
 
-            // 2) create new crust in open rift gaps (one per grid cell per step).
+            // 2) create new crust. A small spatial hash keeps this step's spawns at least holeClear apart,
+            //    so many proposals per region are fine; the first valid one wins.
             //    removeFlag is intentionally left stale on reused slots; it guards against stale partners
             //    and is reset by the next InteractionJob.
+            int mask = spawnHash.Length - 1;
+            int touched = 0;
+            float clear2 = P.holeClear * P.holeClear;
+
             for (int i = 0; i < cap; i++)
             {
                 if (alive[i] == 0 || removeFlag[i] == 1) continue;
                 int j = spawnPartner[i];
-                if (j < 0 || alive[j] == 0 || removeFlag[j] == 1) continue;
+                if (j == InteractionJob.SpawnNone) continue;
+                bool pair = j >= 0;
+                if (pair && (alive[j] == 0 || removeFlag[j] == 1)) continue;
                 if (free == 0) break;
 
-                float3 m = math.normalize(pos[i] + pos[j]);
-                int cell = TMath.Cell(m, P);
-                if (claimed[cell] != 0) continue;
-                claimed[cell] = 1;
+                float3 m = spawnPos[i];
+                int3 c = (int3)math.floor((m + 1f) * P.invSpawnCell);
+
+                bool ok = true;
+                for (int dz = -1; dz <= 1 && ok; dz++)
+                for (int dy = -1; dy <= 1 && ok; dy++)
+                for (int dx = -1; dx <= 1 && ok; dx++)
+                {
+                    int k = spawnHash[(int)(TMath.HashCell(c + new int3(dx, dy, dz)) & (uint)mask)];
+                    if (k >= 0 && math.lengthsq(pos[k] - m) < clear2) ok = false;
+                }
+                if (!ok) continue;
+                int own = (int)(TMath.HashCell(c) & (uint)mask);
+                if (spawnHash[own] >= 0) continue;   // same cell already used (or a hash collision)
 
                 int n = freeList[--free];
-                float avgT = 0.5f * (thickness[i] + thickness[j]);
-                float avgS = 0.5f * (stiffness[i] + stiffness[j]);
-                float cf = TMath.CrustFrac(avgT, P);
+                spawnHash[own] = n;
+                spawnSlots[touched++] = own;
+
+                float srcT, srcS, srcExt, srcAct;
+                float3 v;
+                if (pair)
+                {
+                    srcT = 0.5f * (thickness[i] + thickness[j]);
+                    srcS = 0.5f * (stiffness[i] + stiffness[j]);
+                    srcExt = 0.5f * (extension[i] + extension[j]);
+                    srcAct = math.max(faultActivity[i], faultActivity[j]);
+                    v = 0.5f * (vel[i] + vel[j]);
+                }
+                else
+                {
+                    srcT = thickness[i]; srcS = stiffness[i]; srcExt = extension[i];
+                    srcAct = faultActivity[i]; v = vel[i];
+                }
+                float cf = TMath.CrustFrac(srcT, P);
 
                 // thick/stiff surroundings leave transitional crust (failed-rift margins); thin/young ones make clean oceanic crust
-                float nt = P.oceanThick + (avgT - P.oceanThick) * (P.riftBlend * cf * avgS);
-                float3 v = 0.5f * (vel[i] + vel[j]);
+                float nt = P.oceanThick + (srcT - P.oceanThick) * (P.riftBlend * cf * srcS);
                 v -= m * math.dot(v, m);
 
                 alive[n] = 1; aliveCount++; spawned++;
                 pos[n] = m; vel[n] = v; slab[n] = float3.zero;
                 thickness[n] = nt; age[n] = 0f;
                 orogeny[n] = 0f; arc[n] = 0f; shear[n] = 0f; hotspot[n] = 0f;
-                extension[n] = 0.5f * (extension[i] + extension[j]);
+                extension[n] = srcExt;
                 faultType[n] = (byte)FaultType.Divergent;
-                faultActivity[n] = math.max(faultActivity[i], faultActivity[j]);
+                faultActivity[n] = srcAct;
                 faultDir[n] = faultDir[i];
                 density[n] = TMath.Density(nt, 0f, P);
-                stiffness[n] = TMath.Stiffness(nt, 0f, faultActivity[n], P);
+                stiffness[n] = TMath.Stiffness(nt, 0f, srcAct, P);
             }
+
+            for (int s = 0; s < touched; s++) spawnHash[spawnSlots[s]] = -1;
 
             counters[0] = aliveCount;
             counters[1] = free;
             counters[2] = counters[2] + spawned;
             counters[3] = counters[3] + removed;
+        }
+    }
+
+    // ---------------------------------------------------------------------------------
+    // Optional remesh: resample everything onto the original lattice. Nearest-neighbour copy keeps
+    // boundaries sharp; lattice points with nothing nearby become fresh oceanic crust.
+    // Requires a BuildGridJob on the current positions first.
+    // ---------------------------------------------------------------------------------
+    [BurstCompile]
+    public struct RemeshGatherJob : IJobParallelFor
+    {
+        public TectonicParams P;
+        [ReadOnly] public NativeArray<float3> lattice;
+        [ReadOnly] public NativeArray<int> cellStart, cellItems;
+        [ReadOnly] public NativeArray<float3> pos, vel, faultDir, slab;
+        [ReadOnly] public NativeArray<float> thickness, age, density, stiffness, orogeny, extension, arc, shear, hotspot, faultActivity;
+        [ReadOnly] public NativeArray<byte> faultType;
+
+        [WriteOnly] public NativeArray<float3> oPos, oVel, oFaultDir, oSlab;
+        [WriteOnly] public NativeArray<float> oThickness, oAge, oDensity, oStiffness, oOrogeny, oExtension, oArc, oShear, oHotspot, oFaultActivity;
+        [WriteOnly] public NativeArray<byte> oFaultType;
+
+        public void Execute(int k)
+        {
+            float3 q = lattice[k];
+            int3 ci = (int3)math.floor((q + 1f) * P.invCell);
+            ci = math.clamp(ci, new int3(0), new int3(P.gridDim - 1));
+
+            int best = -1; float bestD2 = float.MaxValue;
+            for (int dz = -1; dz <= 1; dz++)
+            for (int dy = -1; dy <= 1; dy++)
+            for (int dx = -1; dx <= 1; dx++)
+            {
+                int3 c = ci + new int3(dx, dy, dz);
+                if (math.any(c < 0) || math.any(c >= P.gridDim)) continue;
+                int cell = c.x + P.gridDim * (c.y + P.gridDim * c.z);
+                int end = cellStart[cell + 1];
+                for (int s = cellStart[cell]; s < end; s++)
+                {
+                    int j = cellItems[s];
+                    float d2 = math.lengthsq(pos[j] - q);
+                    if (d2 < bestD2) { bestD2 = d2; best = j; }
+                }
+            }
+
+            oPos[k] = q;
+            bool fresh = best < 0 || bestD2 > P.gapDist * P.gapDist;
+            float3 v = best >= 0 ? vel[best] : float3.zero;
+            v -= q * math.dot(v, q);
+            oVel[k] = v;
+            oSlab[k] = float3.zero;
+
+            if (fresh)
+            {
+                float t = P.oceanThick;
+                oThickness[k] = t; oAge[k] = 0f;
+                oDensity[k] = TMath.Density(t, 0f, P);
+                float act = best >= 0 ? faultActivity[best] : 0f;
+                oStiffness[k] = TMath.Stiffness(t, 0f, act, P);
+                oOrogeny[k] = 0f; oExtension[k] = 0f; oArc[k] = 0f; oShear[k] = 0f; oHotspot[k] = 0f;
+                oFaultActivity[k] = act;
+                oFaultType[k] = (byte)FaultType.Divergent;
+                float3 fd = best >= 0 ? faultDir[best] : math.cross(q, new float3(0f, 1f, 0f));
+                oFaultDir[k] = math.normalizesafe(fd - q * math.dot(fd, q), new float3(1f, 0f, 0f));
+                return;
+            }
+
+            float3 f = faultDir[best];
+            oFaultDir[k] = math.normalizesafe(f - q * math.dot(f, q), f);
+            oThickness[k] = thickness[best]; oAge[k] = age[best];
+            oDensity[k] = density[best]; oStiffness[k] = stiffness[best];
+            oOrogeny[k] = orogeny[best]; oExtension[k] = extension[best];
+            oArc[k] = arc[best]; oShear[k] = shear[best]; oHotspot[k] = hotspot[best];
+            oFaultActivity[k] = faultActivity[best]; oFaultType[k] = faultType[best];
+        }
+    }
+
+    [BurstCompile]
+    public struct RemeshApplyJob : IJobParallelFor
+    {
+        public int count;   // lattice size; slots [0, count) become alive
+        [ReadOnly] public NativeArray<float3> tPos, tVel, tFaultDir, tSlab;
+        [ReadOnly] public NativeArray<float> tThickness, tAge, tDensity, tStiffness, tOrogeny, tExtension, tArc, tShear, tHotspot, tFaultActivity;
+        [ReadOnly] public NativeArray<byte> tFaultType;
+
+        public NativeArray<byte> alive, removeFlag, faultType;
+        public NativeArray<int> spawnPartner;
+        public NativeArray<float3> pos, vel, faultDir, slab;
+        public NativeArray<float> thickness, age, density, stiffness, orogeny, extension, arc, shear, hotspot, faultActivity;
+
+        public void Execute(int i)
+        {
+            removeFlag[i] = 0;
+            spawnPartner[i] = InteractionJob.SpawnNone;
+            if (i >= count) { alive[i] = 0; return; }
+            alive[i] = 1;
+            pos[i] = tPos[i]; vel[i] = tVel[i]; faultDir[i] = tFaultDir[i]; slab[i] = tSlab[i];
+            thickness[i] = tThickness[i]; age[i] = tAge[i]; density[i] = tDensity[i]; stiffness[i] = tStiffness[i];
+            orogeny[i] = tOrogeny[i]; extension[i] = tExtension[i]; arc[i] = tArc[i]; shear[i] = tShear[i];
+            hotspot[i] = tHotspot[i]; faultActivity[i] = tFaultActivity[i]; faultType[i] = tFaultType[i];
+        }
+    }
+
+    [BurstCompile]
+    public struct RemeshFinalizeJob : IJob
+    {
+        public int count;
+        public NativeArray<int> freeList, counters;
+
+        public void Execute()
+        {
+            int cap = freeList.Length;
+            int free = cap - count;
+            for (int k = 0; k < free; k++) freeList[k] = cap - 1 - k;
+            counters[0] = count;
+            counters[1] = free;
         }
     }
 
@@ -566,7 +802,7 @@ namespace PlanetGen.Tectonics
 
         [ReadOnly] public NativeArray<byte> alive, faultType;
         [ReadOnly] public NativeArray<float3> pos, vel;
-        [ReadOnly] public NativeArray<float> thickness, age, faultActivity, orogeny, hotspot;
+        [ReadOnly] public NativeArray<float> thickness, age, faultActivity, orogeny, hotspot, crowding;
 
         [WriteOnly, NativeDisableParallelForRestriction] public NativeArray<float3> verts;
         [WriteOnly, NativeDisableParallelForRestriction] public NativeArray<UnityEngine.Color32> colors;
@@ -583,7 +819,7 @@ namespace PlanetGen.Tectonics
             }
 
             float3 n = pos[i];
-            TangentFrame(n, out float3 t, out float3 bt);
+            TMath.TangentFrame(n, out float3 t, out float3 bt);
             float3 c = n * radius;
             float3 ts = t * halfSize, bs = bt * halfSize;
             verts[b]     = c - ts - bs;
@@ -595,14 +831,6 @@ namespace PlanetGen.Tectonics
             var c32 = new UnityEngine.Color32(
                 (byte)(col.x * 255f + 0.5f), (byte)(col.y * 255f + 0.5f), (byte)(col.z * 255f + 0.5f), 255);
             colors[b] = c32; colors[b + 1] = c32; colors[b + 2] = c32; colors[b + 3] = c32;
-        }
-
-        /// <summary>Same frame the gizmo Velocity view uses, so colours match.</summary>
-        public static void TangentFrame(float3 n, out float3 t, out float3 bt)
-        {
-            float3 up = math.abs(n.y) < 0.99f ? new float3(0f, 1f, 0f) : new float3(1f, 0f, 0f);
-            t = math.normalize(math.cross(up, n));
-            bt = math.cross(n, t);
         }
 
         static float4 FaultColor(int type)
@@ -621,6 +849,14 @@ namespace PlanetGen.Tectonics
         {
             float3 k = math.saturate(math.abs(math.frac(h + new float3(1f, 2f / 3f, 1f / 3f)) * 6f - 3f) - 1f);
             return v * math.lerp(new float3(1f), k, s);
+        }
+
+        /// <summary>Blue = sparse, white = even lattice, red = packed.</summary>
+        public static float4 CrowdingColor(float c)
+        {
+            float4 white = 1f;
+            if (c < 1f) return math.lerp(new float4(0.05f, 0.2f, 1f, 1f), white, math.saturate((c - 0.4f) / 0.6f));
+            return math.lerp(white, new float4(1f, 0.1f, 0.05f, 1f), math.saturate((c - 1f) / 0.8f));
         }
 
         float4 ColorFor(int i, float3 t, float3 bt)
@@ -645,6 +881,8 @@ namespace PlanetGen.Tectonics
                     float sp = math.saturate(math.length(v) / P.velRef);
                     return new float4(Hsv(math.frac(h), 0.85f, 0.25f + 0.75f * sp), 1f);
                 }
+                case 7: // Crowding
+                    return CrowdingColor(crowding[i]);
                 default: // Elevation
                 {
                     float e = TMath.ElevationKm(thickness[i], age[i], P);
