@@ -129,6 +129,7 @@ GameObject:
   m_Component:
   - component: {fileID: 463929817}
   - component: {fileID: 463929816}
+  - component: {fileID: 463929818}
   m_Layer: 0
   m_Name: Directional Light
   m_TagString: Untagged
@@ -216,6 +217,35 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 50, y: -30, z: 0}
+--- !u!114 &463929818
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 463929815}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 474bcb49853aa07438625e644c072ee6, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Unity.RenderPipelines.Universal.Runtime::UnityEngine.Rendering.Universal.UniversalAdditionalLightData
+  m_UsePipelineSettings: 1
+  m_AdditionalLightsShadowResolutionTier: 2
+  m_CustomShadowLayers: 0
+  m_LightCookieSize: {x: 1, y: 1}
+  m_LightCookieOffset: {x: 0, y: 0}
+  m_SoftShadowQuality: 0
+  m_RenderingLayersMask:
+    serializedVersion: 0
+    m_Bits: 1
+  m_ShadowRenderingLayersMask:
+    serializedVersion: 0
+    m_Bits: 1
+  m_Version: 4
+  m_LightLayerMask: 1
+  m_ShadowLayerMask: 1
+  m_RenderingLayers: 1
+  m_ShadowRenderingLayers: 1
 --- !u!1 &1096970788
 GameObject:
   m_ObjectHideFlags: 0
@@ -308,9 +338,178 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1 &1331540389
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1331540391}
+  - component: {fileID: 1331540390}
+  m_Layer: 0
+  m_Name: Planet
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &1331540390
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1331540389}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 8577b0b5db8f14d47b75e2bd2961c2fd, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::PlanetGen.Tectonics.MeshSim.PlanetTectonicsMesh
+  seed: 45325
+  targetVertexCount: 20000
+  capacityMultiplier: 2
+  meshJitter: 0.15
+  convectionPointCount: 14
+  convectionEvenness: 6
+  planetRadiusKm: 10
+  uniformInitialCrust: 1
+  initialCrustThicknessKm: 25
+  initialCrustAgeMyr: 0
+  initialThicknessVariationKm: 0.5
+  initialFelsicFraction: 0
+  continentCoverage: 0.3
+  continentNoiseScale: 1.3
+  oceanThicknessKm: 7
+  continentThicknessKm: 35
+  enablePlanetaryCooling: 1
+  planetaryCoolingTimescaleMyr: 1500
+  maxGlobalThermalAgeMyr: 1000
+  thermalStrengthRefMyr: 400
+  totalTimeMyr: 4000
+  stepMyr: 0
+  maxStepFraction: 0.2
+  animMyrPerSecond: 100
+  maxStepsPerFrame: 8
+  liveTuning: 1
+  animateOnPlay: 0
+  showPreviewMesh: 1
+  previewMaterial: {fileID: 0}
+  showWireframe: 1
+  wireColor: {r: 0, g: 0, b: 0, a: 0.35}
+  wireMaterial: {fileID: 0}
+  maxEdgeLength: 1.6
+  minEdgeLength: 0.45
+  compressionMergeLength: 0.7
+  sliverAltitude: 0.2
+  relaxation: 0
+  maxValence: 12
+  barrierStart: 0.9
+  barrierStiffness: 10
+  barrierAgeFactor: 1.5
+  gravitySpreading: 0.00004
+  gravityLock: 1
+  gravityLockMarginKm: 8
+  maxThicknessKm: 75
+  enableStrengthSolve: 1
+  plateCoherenceRad: 1
+  oceanicCoherenceFactor: 0.3
+  strengthSolveIterations: 40
+  strengthSolveTolerance: 0.02
+  compressiveStressWeight: 0.5
+  continentalRigidity: 0.95
+  rigidBlockDamageLimit: 0.3
+  rigidBlockMinVertices: 12
+  enableExtensionResistance: 1
+  extensionStiffness: 0.9
+  extensionAgeFactor: 1.5
+  extensionThicknessFactor: 2.5
+  fracturedCrustResistance: 0.05
+  extensionYield: 0.15
+  extensionDamageRate: 0.2
+  damageNucleation: 0.1
+  damageWeakening: 0.8
+  damageHealThreshold: 0.5
+  extensionDamageHealing: 0.005
+  riftDamageThreshold: 0.5
+  enableSubductionSink: 1
+  enableRifting: 1
+  riftCrustThicknessKm: 7
+  minimumCrustKm: 3.5
+  delaminationRatePerMyr: 0.02
+  erosionDiffusivityKm2PerMyr: 50
+  erosionBaseKm: 35
+  erosionRecycleFraction: 0
+  enableMagmatism: 1
+  magmaticReturnFraction: 0.15
+  magmaticYouthBoost: 1
+  magmaReleaseMyr: 20
+  magmaticFelsicFraction: 0.5
+  felsicSubductionFraction: 0.15
+  felsicBuoyantColumnKm: 15
+  convectionStrength: 0.003
+  convectionRadiusScale: 1.3
+  plumeThreshold: 0.7
+  plumeRadius: 0.3
+  convectionDrift: 0.01
+  temperatureNoise: 0.005
+  insulationHeat: 0.012
+  insulationOnset: 0.5
+  surfaceCooling: 0.008
+  subductionCool: 0.5
+  feedbackRelaxPerMyr: 0.005
+  convectionVigor: 0.45
+  convectionYouthVigor: 0.25
+  ageResistance: 0.5
+  ageSaturationMyr: 300
+  velocityInertiaMyr: 20
+  plateCoupling: 0.9
+  plateRigidityPasses: 0
+  constraintPasses: 6
+  slabPull: 0.002
+  subductThicknessDiffKm: 12
+  subductDensityDiff: 0.2
+  riftOpenThreshold: 0.1
+  overridingThickening: 0.35
+  orogenyGain: 0.01
+  orogenyDecayMyr: 300
+  arcGain: 0.01
+  arcDecayMyr: 150
+  velocityReference: 0.003
+  faultThreshold: 0.12
+  faultMemoryMyr: 150
+  transformDominance: 1.2
+  debugView: 16
+  drawGizmos: 1
+  drawConvection: 1
+  drawFaultDirections: 0
+  gizmoStride: 2
+  hideBackside: 1
+  gizmoSnapshotInterval: 4
+  validateEveryBatch: 0
+  eventFlashMyr: 20
+  diagnosticsInterval: 10
+  historyIntervalMyr: 25
+--- !u!4 &1331540391
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1331540389}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0
   m_Roots:
   - {fileID: 1096970791}
   - {fileID: 463929817}
+  - {fileID: 1331540391}

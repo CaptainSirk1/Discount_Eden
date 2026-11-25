@@ -66,7 +66,7 @@ namespace PlanetGen.Tectonics.MeshSim
         public static readonly MeshSettings D = new MeshSettings
         {
             seed = 12345, targetVertexCount = 20000, convectionPointCount = 14, convectionEvenness = 6,
-            capacityMultiplier = 2f, meshJitter = 0.15f, planetRadiusKm = 6371f,
+            capacityMultiplier = 2f, meshJitter = 0.15f, planetRadiusKm = 10f,
 
             uniformInitialCrust = true, initialCrustThicknessKm = 25f, initialCrustAgeMyr = 0f, initialThicknessVariationKm = 0.5f,
             continentCoverage = 0.3f, continentNoiseScale = 1.3f, oceanThicknessKm = 7f, continentThicknessKm = 35f,
